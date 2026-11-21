@@ -1,0 +1,25 @@
+import { chromium } from '/home/ilham/.hermes/hermes-agent/node_modules/playwright-core/index.mjs';
+const browser = await chromium.launch({ executablePath: '/home/ilham/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome', args: ['--no-sandbox', '--disable-gpu-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'] });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+await page.goto('http://localhost:8080/?shot=cover&seed=1&capture=1', { waitUntil: 'load', timeout: 180000 });
+await page.waitForFunction('window.__SHOT_READY === true', null, { timeout: 180000 });
+await page.screenshot({ path: '/tmp/a.jpg', type: 'jpeg', quality: 95 });
+await page.evaluate(() => { const g = window.__COSTA_GAME; g.vehicle.group.rotation.y = 0.8; g.renderer.render(g.scene, g.camera); });
+await page.waitForTimeout(700);
+await page.screenshot({ path: '/tmp/b.jpg', type: 'jpeg', quality: 95 });
+await page.evaluate(() => {
+  const g = window.__COSTA_GAME;
+  g.vehicle.group.rotation.y = Math.PI;
+  const c = g.vehicle.contact;
+  c.position.set(0, 0.06, 0);
+  c.material.map = null;
+  c.material.transparent = false;
+  c.material.opacity = 1;
+  c.material.color.setHex(0xff00ff);
+  c.material.side = window.THREE.DoubleSide;
+  c.material.needsUpdate = true;
+  g.renderer.render(g.scene, g.camera);
+});
+await page.waitForTimeout(700);
+await page.screenshot({ path: '/tmp/c.jpg', type: 'jpeg', quality: 95 });
+await browser.close();

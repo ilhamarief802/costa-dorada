@@ -1,0 +1,45 @@
+import { chromium } from '/home/ilham/.hermes/hermes-agent/node_modules/playwright-core/index.mjs';
+const b = await chromium.launch({ executablePath: '/home/ilham/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome', args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'] });
+const p = await b.newPage({ viewport: { width: 1280, height: 720 } });
+p.on('pageerror', (e) => console.log('ERR', e.message));
+await p.goto('http://localhost:8080/?seed=1', { waitUntil: 'load', timeout: 120000 });
+await p.waitForTimeout(500);
+await p.click('text=NEW GAME');
+await p.waitForTimeout(500);
+const out = await p.evaluate(() => {
+  const g = window.__COSTA_GAME;
+  const log = {};
+  const car = g.traffic.cars[0];
+  g.player.stage(car.x - 1.2, car.z, 0);
+  g.input.edge.add('steal');
+  g.loop.update(1 / 60);
+  log.steal = { driving: g.state.driving, pos: [g.vehicle.pos.x, g.vehicle.pos.z], yaw: g.vehicle.yaw, car: [car.x, car.z, car.heading] };
+  g.input.down.add('forward');
+  const trace = [];
+  for (let i = 0; i < 60; i += 1) {
+    g.loop.update(1 / 60);
+    if (i % 10 === 0) trace.push({ i, kmh: +g.vehicle.speedKmh.toFixed(2), p: [+g.vehicle.pos.x.toFixed(2), +g.vehicle.pos.z.toFixed(2)], ct: g.vehicle.collisionTimer, lf: +g.vehicle.lastForward.toFixed(2) });
+  }
+  g.input.down.delete('forward');
+  log.trace = trace;
+  const ped = g.pedestrians.peds[0];
+  g.player.stage(ped.x + 4, ped.z, 0);
+  g.player.setVisible(false);
+  g.camera.position.set(ped.x + 4, ped.y ?? 2.2, ped.z + 0.6);
+  g.camera.lookAt(ped.x, 1.1, ped.z);
+  g.camera.updateMatrixWorld();
+  const dir = new window.THREE.Vector3();
+  g.camera.getWorldDirection(dir);
+  const chest = new window.THREE.Vector3(g.player.pos.x, g.player.pos.y + 1.28, g.player.pos.z);
+  const aim = g.camera.position.clone().addScaledVector(dir, 80);
+  const bullet = aim.sub(chest).normalize();
+  const hit = g.combat.raycast(chest, bullet, 96);
+  log.ped = { x: ped.x, z: ped.z, ground: ped.ground, kind: ped.kind, dead: ped.dead };
+  log.cam = { pos: g.camera.position.toArray(), dir: dir.toArray(), chest: chest.toArray(), bullet: bullet.toArray() };
+  log.hit = { distance: hit.distance, world: hit.world, kind: hit.target?.kind, tx: hit.target?.x, tz: hit.target?.z };
+  g.combat.fire();
+  log.afterFire = { dead: ped.dead, wanted: g.state.wanted };
+  return log;
+});
+console.log(JSON.stringify(out, null, 1));
+await b.close();

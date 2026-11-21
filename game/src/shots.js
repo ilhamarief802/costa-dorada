@@ -1,79 +1,123 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// The screenshot rig. Four frozen scenes: the golden cover, the same avenue at night, a police
+// chase, and a mission firefight. The camera is placed by hand, the sim is advanced to a settled
+// pose, one frame is rendered twice and the probe is told the frame is ready.
+import config from './core/config.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+const THREE = globalThis.THREE;
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
-}
+const SHOTS = {
+  cover: {
+    period: 'golden',
+    camera: { x: 30.0, y: 2.6, z: 345.0 },
+    target: { x: 8, y: 7.5, z: 40 },
+    clock: '19:42',
+    player: { x: 47.5, z: 341.6, yaw: Math.PI },
+    car: { x: 28.0, z: 336.0, yaw: Math.PI / 2 },
+    crowd: true,
+    traffic: true,
+  },
+  night: {
+    period: 'night',
+    camera: { x: 30.0, y: 2.6, z: 345.0 },
+    target: { x: 8, y: 7.5, z: 40 },
+    clock: '23:18',
+    player: { x: 47.5, z: 341.6, yaw: Math.PI },
+    car: { x: 28.0, z: 336.0, yaw: Math.PI / 2 },
+    crowd: true,
+    traffic: true,
+  },
+  chase: {
+    period: 'golden',
+    camera: { x: -18, y: 4.4, z: 333 },
+    target: { x: 30, y: 2.0, z: 327 },
+    clock: '20:06',
+    player: { x: 26, z: 326, yaw: Math.PI / 2 },
+    car: { x: 26, z: 326, yaw: Math.PI / 2 },
+    chase: true,
+    traffic: false,
+  },
+  mission: {
+    period: 'golden',
+    camera: { x: -216, y: 5.0, z: 78 },
+    target: { x: -188, y: 1.6, z: 94 },
+    clock: '20:31',
+    player: { x: -209, z: 88, yaw: Math.PI / 2 },
+    car: { x: -204, z: 82, yaw: 0.4 },
+    mission: true,
+    traffic: false,
+  },
+};
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
-}
+export default function stageShot(name, game) {
+  const shot = SHOTS[name] ?? SHOTS.cover;
+  game.stage.classList.add('capture');
+  game.weather.setPeriod(shot.period);
+  game.traffic.setPeriod(shot.period);
+  game.player.stage(shot.player.x, shot.player.z, shot.player.yaw);
+  game.vehicle.stage(shot.car.x, shot.car.z, shot.car.yaw);
+  game.vehicle.setPeriod(shot.period);
+  game.police.setWanted(0, true);
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+  let focus = new THREE.Vector3(shot.target.x, 0, shot.target.z);
+
+  if (shot.chase) {
+    game.vehicle.setVisible(true);
+    game.vehicle.occupy();
+    game.player.setVisible(false);
+    game.vehicle.update(1 / 60, game.input, false);
+    game.police.stageChase(game.vehicle.pos);
+    game.hud.setWanted(4);
+    game.hud.setMission('CHAPTER III', 'HEAT EXCHANGE', 'Lose the police before they box you in.');
+    focus = game.vehicle.pos.clone();
+  } else if (shot.mission) {
+    game.player.setVisible(true);
+    game.vehicle.setVisible(true);
+    const point = game.missions.stageShot();
+    game.hud.setWanted(0);
+    focus = new THREE.Vector3(point.x, 0, point.z);
+  } else {
+    game.player.setVisible(false);
+    game.vehicle.setVisible(true);
+    game.hud.setWanted(0);
+    game.hud.setMission('CHAPTER I', 'SUNSET RUN', 'Meet Rafa at the marina before sundown.');
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
-  }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+
+  if (shot.crowd) game.pedestrians.stageCover();
+  if (shot.traffic) game.traffic.stageCover();
+
+  game.traffic.update(0, { playerPos: game.vehicle.pos });
+  game.pedestrians.update(0);
+  game.missions.update(0, { playerPos: game.player.pos, heading: game.player.yaw });
+  game.combat.update(0);
+
+  game.hud.setVisible(true);
+  game.hud.showPrompt(null);
+  game.hud.setSpeed(shot.chase ? 88 : 0, Boolean(shot.chase));
+  game.hud.setClock(shot.clock);
+  game.hud.setDistrict(shot.period === 'night' ? 'PLAYA DORADA / NIGHT' : 'PLAYA DORADA');
+  game.menus.hideTitle();
+  game.menus.hidePause();
+
+  game.weather.update(1 / 60, focus);
+  game.hud.update(game.player, game.vehicle, Boolean(shot.chase), 0, game.camera, {
+    traffic: game.traffic.cars,
+    cruisers: game.police.cruisers.filter((cruiser) => cruiser.alive).map((cruiser) => ({
+      x: cruiser.pos.x, z: cruiser.pos.z, flip: Math.sin(game.police.elapsed * 7) > 0,
+    })),
+  });
+
+  game.rig.setShot(
+    new THREE.Vector3(shot.camera.x, shot.camera.y, shot.camera.z),
+    new THREE.Vector3(shot.target.x, shot.target.y, shot.target.z),
+  );
+
+  game.renderer.shadowMap.needsUpdate = true;
+  game.renderer.render(game.scene, game.camera);
+  game.renderer.render(game.scene, game.camera);
+  requestAnimationFrame(() => {
+    game.renderer.render(game.scene, game.camera);
+    window.__SHOT_READY = true;
+    window.__SHOT_NAME = name;
+  });
+  void config;
 }

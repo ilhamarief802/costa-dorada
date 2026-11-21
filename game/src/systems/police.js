@@ -1,0 +1,507 @@
+// Police and the wanted level. One to five stars raise the heat: cruisers spawn off-screen and
+// drive at the player with flashing bars and a two-tone siren, three stars bring a roadblock,
+// four add a helicopter with a searchlight. Breaking line of sight for long enough clears it.
+import config from '../core/config.js';
+import Rng from '../core/rng.js';
+import { clamp, dampAngle, rayBox, resolveCircleBox } from '../core/math.js';
+
+const THREE = globalThis.THREE;
+
+function buildCruiser() {
+  const group = new THREE.Group();
+  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xf0eee4, roughness: 0.42, metalness: 0.25 });
+  const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0x173a6d, roughness: 0.5, metalness: 0.2 });
+  const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x131c24, roughness: 0.15, metalness: 0.6 });
+  const tyreMaterial = new THREE.MeshStandardMaterial({ color: 0x121212, roughness: 0.95 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.96, 0.62, 4.54), bodyMaterial);
+  body.position.y = 0.66;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.99, 0.18, 4.56), stripeMaterial);
+  stripe.position.y = 0.72;
+  group.add(stripe);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.56, 2.2), glassMaterial);
+  cabin.position.set(0, 1.2, -0.18);
+  cabin.castShadow = true;
+  group.add(cabin);
+  const wheelGeometry = new THREE.CylinderGeometry(0.34, 0.34, 0.26, 8);
+  wheelGeometry.rotateZ(Math.PI / 2);
+  for (const sx of [-0.92, 0.92]) {
+    for (const sz of [-1.45, 1.45]) {
+      const wheel = new THREE.Mesh(wheelGeometry, tyreMaterial);
+      wheel.position.set(sx, 0.34, sz);
+      group.add(wheel);
+    }
+  }
+  const redMaterial = new THREE.MeshBasicMaterial({ color: 0xff2a1e, toneMapped: false });
+  const blueMaterial = new THREE.MeshBasicMaterial({ color: 0x2a5dff, toneMapped: false });
+  const red = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 0.95), redMaterial);
+  red.position.set(-0.45, 1.55, -0.1);
+  const blue = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 0.95), blueMaterial);
+  blue.position.set(0.45, 1.55, -0.1);
+  group.add(red, blue);
+  return { group, redMaterial, blueMaterial };
+}
+
+export default class Police {
+  constructor({ plan, scene, player, vehicle, traffic, hud, events, state, seed }) {
+    this.plan = plan;
+    this.scene = scene;
+    this.player = player;
+    this.vehicle = vehicle;
+    this.traffic = traffic;
+    this.hud = hud;
+    this.events = events;
+    this.state = state;
+    this.rng = new Rng((seed ^ 0x6d3f91b7) >>> 0);
+    this.group = new THREE.Group();
+    this.group.name = 'police';
+    scene.add(this.group);
+    this.cruisers = [];
+    this.roadblocks = [];
+    this.helicopter = null;
+    this.spawnTimer = 0;
+    this.roadblockTimer = 0;
+    this.sightTimer = 0;
+    this.losTimer = 0;
+    this.losVisible = false;
+    this.elapsed = 0;
+    this.siren = null;
+    this.sirenOn = false;
+    this.audio = null;
+    this.state.wanted = this.state.wanted ?? 0;
+    this.stars = 0;
+    this.emitWanted();
+  }
+
+  unlockAudio() {
+    if (this.audio) return;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    try {
+      this.audio = new AudioContext();
+    } catch {
+      this.audio = null;
+    }
+  }
+
+  startSiren() {
+    if (!this.audio || this.sirenOn) return;
+    const context = this.audio;
+    if (context.state === 'suspended') context.resume().catch(() => {});
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sawtooth';
+    oscillator.frequency.value = 700;
+    gain.gain.value = 0.0001;
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    gain.gain.linearRampToValueAtTime(0.018, context.currentTime + 0.6);
+    this.siren = { oscillator, gain };
+    this.sirenOn = true;
+  }
+
+  stopSiren() {
+    if (!this.siren) return;
+    const { oscillator, gain } = this.siren;
+    const now = this.audio.currentTime;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.linearRampToValueAtTime(0.0001, now + 0.25);
+    oscillator.stop(now + 0.3);
+    this.siren = null;
+    this.sirenOn = false;
+  }
+
+  emitWanted() {
+    this.stars = clamp(this.state.wanted | 0, 0, 5);
+    this.hud.setWanted?.(this.stars);
+    this.events.emit('wanted', this.stars);
+  }
+
+  addWanted(amount, reason = '') {
+    const before = this.state.wanted | 0;
+    this.state.wanted = clamp(before + Math.max(1, amount), 1, 5);
+    this.sightTimer = 0;
+    if (this.state.wanted !== before) {
+      this.emitWanted();
+      this.events.emit('crime', { level: this.state.wanted, reason });
+    }
+    this.ensureCruisers();
+  }
+
+  setWanted(level, quiet = false) {
+    this.state.wanted = clamp(level | 0, 0, 5);
+    this.sightTimer = 0;
+    if (!quiet) this.emitWanted();
+    else this.stars = this.state.wanted;
+    if (this.state.wanted === 0) this.dismantle();
+    else this.ensureCruisers();
+  }
+
+  dismantle() {
+    for (const cruiser of this.cruisers) this.group.remove(cruiser.group);
+    this.cruisers.length = 0;
+    for (const block of this.roadblocks) this.group.remove(block);
+    this.roadblocks.length = 0;
+    if (this.helicopter) this.helicopter.group.visible = false;
+    this.stopSiren();
+  }
+
+  spawnCruiser(x, z, yaw, parked = false) {
+    const model = buildCruiser();
+    const cruiser = {
+      ...model,
+      pos: new THREE.Vector3(x, this.plan.heightAt(x, z), z),
+      yaw,
+      speed: 0,
+      hp: 180,
+      alive: true,
+      parked,
+      fireTimer: this.rng.float(0.6, 1.8),
+      flash: 0,
+      hitFlash: 0,
+    };
+    this.group.add(model.group);
+    this.cruisers.push(cruiser);
+    return cruiser;
+  }
+
+  nearestRoad(value, axis) {
+    const list = axis === 'x' ? this.plan.roads.x : this.plan.roads.z;
+    let best = list[0];
+    let bestDistance = Infinity;
+    for (const road of list) {
+      const distance = Math.abs(value - road);
+      if (distance < bestDistance) { bestDistance = distance; best = road; }
+    }
+    return best;
+  }
+
+  spawnOffscreen(playerPos) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const angle = this.rng.float(0, Math.PI * 2);
+      const distance = config.police.spawnDistance + this.rng.float(-18, 26);
+      let x = playerPos.x + Math.cos(angle) * distance;
+      let z = playerPos.z + Math.sin(angle) * distance;
+      if (Math.abs(Math.cos(angle)) > Math.abs(Math.sin(angle))) x = this.nearestRoad(x, 'x');
+      else z = this.nearestRoad(z, 'z');
+      x = clamp(x, -310, 310);
+      z = clamp(z, -310, 330);
+      if (Math.hypot(x - playerPos.x, z - playerPos.z) < 120) continue;
+      const colliders = this.plan.queryColliders(x, z, 2.6, []);
+      const blocked = colliders.some((box) => (box.kind === 'building' || box.kind === 'pillar') && resolveCircleBox(x, z, 1.7, box));
+      if (!blocked) {
+        return this.spawnCruiser(x, z, Math.atan2(playerPos.x - x, playerPos.z - z));
+      }
+    }
+    return this.spawnCruiser(clamp(playerPos.x + 130, -300, 300), 329, -Math.PI / 2);
+  }
+
+  ensureCruisers() {
+    const want = Math.min(config.police.maxCruisers, Math.max(1, this.state.wanted));
+    let active = this.cruisers.filter((cruiser) => cruiser.alive).length;
+    while (active < want) {
+      const playerPos = this.vehicle.occupied ? this.vehicle.pos : this.player.pos;
+      this.spawnOffscreen(playerPos);
+      active += 1;
+    }
+  }
+
+  hasLineOfSight(from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const length = Math.hypot(dx, dy, dz);
+    if (length < 0.1) return true;
+    const direction = { x: dx / length, y: dy / length, z: dz / length };
+    for (const box of this.plan.colliders) {
+      if (box.kind !== 'building' && box.kind !== 'pillar') continue;
+      const hit = rayBox(from, direction, box, length - 0.5);
+      if (hit < length - 0.5) return false;
+    }
+    return true;
+  }
+
+  damagePlayer(amount, x, z) {
+    if (this.state.mode !== 'playing') return;
+    this.events.emit('player-damaged', { amount, x, z });
+  }
+
+  update(dt, ctx = {}) {
+    this.elapsed += dt;
+    if (this.state.wanted <= 0) {
+      this.stopSiren();
+      return;
+    }
+    const playerPos = this.vehicle.occupied ? this.vehicle.pos : this.player.pos;
+    this.spawnTimer -= dt;
+    if (this.cruisers.filter((c) => c.alive).length < Math.min(config.police.maxCruisers, this.state.wanted) && this.spawnTimer <= 0) {
+      this.spawnOffscreen(playerPos);
+      this.spawnTimer = 2.6;
+    }
+
+    // Refresh line of sight a few times a second, not every frame.
+    this.losTimer -= dt;
+    if (this.losTimer <= 0) {
+      this.losTimer = 0.24;
+      this.losVisible = false;
+      for (const cruiser of this.cruisers) {
+        if (!cruiser.alive) continue;
+        const distance = cruiser.pos.distanceTo(playerPos);
+        if (distance < config.police.loseDistance) {
+          const eye = { x: cruiser.pos.x, y: cruiser.pos.y + 1.6, z: cruiser.pos.z };
+          if (this.hasLineOfSight(eye, { x: playerPos.x, y: playerPos.y + 1.2, z: playerPos.z })) {
+            this.losVisible = true;
+            break;
+          }
+        }
+      }
+      if (this.losVisible) this.sightTimer = 0;
+      else this.sightTimer += 0.24;
+      if (this.sightTimer > config.police.loseTime) {
+        if (this.state.wanted <= 2) this.setWanted(0);
+        else this.setWanted(this.state.wanted - 1);
+        this.sightTimer = 0;
+        this.events.emit('pursuit-lost');
+      }
+    }
+
+    let near = false;
+    for (const cruiser of this.cruisers) {
+      if (!cruiser.alive) continue;
+      const distance = cruiser.pos.distanceTo(playerPos);
+      if (distance < 55) near = true;
+      this.updateCruiser(cruiser, dt, playerPos, ctx);
+    }
+    if (near) this.startSiren();
+    for (const block of this.roadblocks) {
+      for (const cruiser of block.cruisers) {
+        if (cruiser.alive) this.updateCruiser(cruiser, dt, playerPos, ctx, true);
+      }
+      for (const light of block.lights) {
+        light.material.color.setHex(Math.sin(this.elapsed * 9 + block.phase) > 0 ? 0xff3020 : 0x2a5dff);
+      }
+    }
+
+    if (this.state.wanted >= config.police.roadblockLevel) {
+      this.roadblockTimer -= dt;
+      if (this.roadblockTimer <= 0 && !this.roadblocks.some((block) => block.pos.distanceTo(playerPos) < 190)) {
+        this.spawnRoadblock(playerPos);
+        this.roadblockTimer = 26;
+      }
+    }
+    if (this.state.wanted >= config.police.helicopterLevel) this.updateHelicopter(dt, playerPos);
+    else if (this.helicopter) this.helicopter.group.visible = false;
+  }
+
+  updateCruiser(cruiser, dt, target, ctx, roadblock = false) {
+    if (!cruiser.alive) return;
+    cruiser.flash = (cruiser.flash + dt) % 0.42;
+    const on = cruiser.flash < 0.15;
+    const flip = Math.sin(this.elapsed * 7 + cruiser.pos.x * 0.03) > 0;
+    cruiser.redMaterial.color.setHex(on && flip ? 0xff2418 : 0x3a0b08);
+    cruiser.blueMaterial.color.setHex(on && !flip ? 0x2a5dff : 0x0a123a);
+    cruiser.hitFlash = Math.max(0, cruiser.hitFlash - dt);
+
+    const dx = target.x - cruiser.pos.x;
+    const dz = target.z - cruiser.pos.z;
+    const distance = Math.hypot(dx, dz);
+    if (!roadblock && !cruiser.parked) {
+      const desired = Math.atan2(dx, dz);
+      cruiser.yaw = dampAngle(cruiser.yaw, desired, 2.6, dt);
+      const targetSpeed = distance > 12 ? config.police.speed + Math.min(6, this.state.wanted * 1.2) : 0;
+      cruiser.speed += clamp(targetSpeed - cruiser.speed, -18 * dt, 9 * dt);
+      const step = cruiser.speed * dt;
+      const forwardX = Math.sin(cruiser.yaw);
+      const forwardZ = Math.cos(cruiser.yaw);
+      let moved = false;
+      for (const offset of [0, 0.55, -0.55, 1.15, -1.15, 1.9, -1.9]) {
+        const yaw = cruiser.yaw + offset;
+        const nx = cruiser.pos.x + Math.sin(yaw) * step;
+        const nz = cruiser.pos.z + Math.cos(yaw) * step;
+        const blockers = this.plan.queryColliders(nx, nz, 2.2, []);
+        let blocked = false;
+        for (const box of blockers) {
+          if (box.kind !== 'building' && box.kind !== 'pillar') continue;
+          if (resolveCircleBox(nx, nz, 1.55, box)) { blocked = true; break; }
+        }
+        if (!blocked) {
+          cruiser.pos.x = nx;
+          cruiser.pos.z = nz;
+          cruiser.yaw = yaw;
+          moved = true;
+          break;
+        }
+      }
+      if (!moved) cruiser.speed *= 0.7;
+      cruiser.pos.y = this.plan.heightAt(cruiser.pos.x, cruiser.pos.z);
+      cruiser.group.position.copy(cruiser.pos);
+      cruiser.group.rotation.y = cruiser.yaw;
+      // Wheels are children without a handle; the whole group rolls, good enough at speed.
+      cruiser.group.rotation.z = Math.sin(this.elapsed * 18) * Math.min(0.02, cruiser.speed * 0.0008);
+    } else if (roadblock) {
+      cruiser.group.position.copy(cruiser.pos);
+      cruiser.group.rotation.y = cruiser.yaw;
+    }
+
+    if (cruiser.hp <= 0 && cruiser.alive) {
+      cruiser.alive = false;
+      cruiser.group.visible = false;
+      this.events.emit('cruiser-down');
+      return;
+    }
+
+    if (distance < config.police.shootRange) {
+      const eye = { x: cruiser.pos.x, y: cruiser.pos.y + 1.55, z: cruiser.pos.z };
+      const chest = { x: target.x, y: target.y + 1.2, z: target.z };
+      if (this.hasLineOfSight(eye, chest)) {
+        cruiser.fireTimer -= dt;
+        if (cruiser.fireTimer <= 0) {
+          cruiser.fireTimer = config.police.shootDelay + this.rng.float(0, 0.7);
+          const accuracy = this.rng.float(0.32, 0.68);
+          this.damagePlayer(5 + Math.round(accuracy * 9), cruiser.pos.x, cruiser.pos.z);
+          this.events.emit('police-shot', { x: cruiser.pos.x, y: cruiser.pos.y + 1.4, z: cruiser.pos.z });
+        }
+      }
+    }
+    void ctx;
+  }
+
+  spawnRoadblock(playerPos) {
+    const forward = this.vehicle.occupied ? { x: Math.sin(this.vehicle.yaw), z: Math.cos(this.vehicle.yaw) } : { x: 0, z: 1 };
+    const centerX = playerPos.x + forward.x * 78;
+    const centerZ = playerPos.z + forward.z * 78;
+    const across = Math.abs(forward.x) > Math.abs(forward.z);
+    const yaw = across ? Math.PI / 2 : 0;
+    const offsetX = across ? 0 : 4.6;
+    const offsetZ = across ? 4.6 : 0;
+    const group = new THREE.Group();
+    const cruisers = [];
+    for (const sign of [-1, 1]) {
+      const x = centerX + offsetX * sign;
+      const z = centerZ + offsetZ * sign;
+      const colliders = this.plan.queryColliders(x, z, 2.4, []);
+      if (colliders.some((box) => box.kind === 'building')) continue;
+      const model = buildCruiser();
+      const cruiser = {
+        ...model,
+        pos: new THREE.Vector3(x, this.plan.heightAt(x, z), z),
+        yaw: yaw + Math.PI / 2,
+        speed: 0,
+        hp: 180,
+        alive: true,
+        parked: true,
+        fireTimer: this.rng.float(0.5, 1.4),
+        flash: 0,
+        hitFlash: 0,
+      };
+      cruiser.group.position.copy(cruiser.pos);
+      cruiser.group.rotation.y = cruiser.yaw;
+      this.group.add(cruiser.group);
+      cruisers.push(cruiser);
+    }
+    const lights = [];
+    const cones = [];
+    for (let i = -3; i <= 3; i += 1) {
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(0.22, 0.62, 8),
+        new THREE.MeshStandardMaterial({ color: 0xe4581f, roughness: 0.8 }),
+      );
+      cone.position.set(centerX + (across ? i * 1.5 : (i % 2) * 0.4), this.plan.heightAt(centerX, centerZ) + 0.31, centerZ + (across ? (i % 2) * 0.4 : i * 1.5));
+      group.add(cone);
+      cones.push(cone);
+      if (i % 2 === 0) {
+        const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 5), new THREE.MeshBasicMaterial({ color: 0xff3020 }));
+        lamp.position.set(cone.position.x, cone.position.y + 0.45, cone.position.z);
+        group.add(lamp);
+        lights.push(lamp);
+      }
+    }
+    this.group.add(group);
+    this.roadblocks.push({ group, cruisers, lights, cones, phase: this.rng.float(0, 6), pos: new THREE.Vector3(centerX, 0, centerZ) });
+    this.events.emit('roadblock');
+  }
+
+  updateHelicopter(dt, playerPos) {
+    if (!this.helicopter) {
+      const group = new THREE.Group();
+      const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x1b2733, roughness: 0.5, metalness: 0.4 });
+      const body = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 4.2), bodyMaterial);
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 4.4), bodyMaterial);
+      tail.position.set(0, 0.1, -4.0);
+      const rotor = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.06, 0.35), new THREE.MeshStandardMaterial({ color: 0x11181f }));
+      rotor.position.y = 0.6;
+      const tailRotor = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.05, 0.18), new THREE.MeshStandardMaterial({ color: 0x11181f }));
+      tailRotor.position.set(0, 0.15, -6.1);
+      const skid = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 3.0), new THREE.MeshStandardMaterial({ color: 0x2b333a }));
+      skid.position.set(-0.8, -0.6, 0);
+      const skid2 = skid.clone();
+      skid2.position.x = 0.8;
+      const light = new THREE.SpotLight(0xffffff, 0, 90, 0.42, 0.45, 1.2);
+      light.position.set(0, -1, 0);
+      const target = new THREE.Object3D();
+      group.add(body, tail, rotor, tailRotor, skid, skid2, light, target);
+      light.target = target;
+      this.group.add(group);
+      this.helicopter = { group, rotor, tailRotor, light, target, angle: 0 };
+    }
+    const heli = this.helicopter;
+    heli.group.visible = true;
+    heli.angle += dt * 0.45;
+    const radius = 46;
+    const x = playerPos.x + Math.cos(heli.angle) * radius;
+    const z = playerPos.z + Math.sin(heli.angle) * radius;
+    const y = playerPos.y + 34;
+    heli.group.position.set(x, y, z);
+    heli.group.lookAt(playerPos.x, playerPos.y + 0.5, playerPos.z);
+    heli.rotor.rotation.y += dt * 26;
+    heli.tailRotor.rotation.x += dt * 30;
+    heli.light.intensity = 2.8;
+    heli.target.position.set(playerPos.x, playerPos.y + 0.3, playerPos.z);
+    heli.target.updateMatrixWorld();
+  }
+
+  getTargets() {
+    const targets = [];
+    for (const cruiser of this.cruisers) {
+      if (!cruiser.alive) continue;
+      targets.push({
+        x: cruiser.pos.x,
+        y: cruiser.pos.y + 0.8,
+        z: cruiser.pos.z,
+        radius: 2.1,
+        kind: 'police',
+        hit: (damage) => {
+          cruiser.hp -= damage;
+          cruiser.hitFlash = 0.12;
+          if (cruiser.hp <= 0) {
+            cruiser.alive = false;
+            cruiser.group.visible = false;
+            this.events.emit('cruiser-down');
+          }
+        },
+      });
+    }
+    return targets;
+  }
+
+  stageChase(playerPos) {
+    this.setWanted(4, true);
+    this.losVisible = true;
+    this.cruisers.length = 0;
+    const ring = [
+      [playerPos.x + 17, playerPos.z + 8, Math.PI * 1.5],
+      [playerPos.x - 15, playerPos.z + 15, -0.4],
+      [playerPos.x + 5, playerPos.z + 30, Math.PI],
+    ];
+    for (const [x, z, yaw] of ring) this.spawnCruiser(x, z, yaw);
+    this.emitWanted();
+    this.updateHelicopter(0.016, playerPos);
+    for (const cruiser of this.cruisers) {
+      cruiser.group.position.copy(cruiser.pos);
+      cruiser.group.rotation.y = cruiser.yaw;
+    }
+  }
+}
