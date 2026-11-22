@@ -1,7 +1,7 @@
 // Buildings are three instanced meshes (mass, windows, shopfronts) plus small per-building
 // furniture. Lights are baked into emissive materials, never into extra point lights.
 import config from '../core/config.js';
-import { signMaterial } from '../core/assets.js';
+import { signMaterial, glowTexture } from '../core/assets.js';
 import { stuccoTexture } from '../core/assets.js';
 
 const THREE = globalThis.THREE;
@@ -18,9 +18,12 @@ export default class Buildings {
     this.buildMass();
     this.buildWindows();
     this.buildStorefronts();
+    this.buildRoofFurniture();
+    this.buildBladeSigns();
     this.buildRoofs();
     this.buildAwnings();
     this.buildSigns();
+    this.buildStreetLights();
   }
 
   buildMass() {
@@ -257,10 +260,179 @@ export default class Buildings {
     this.group.add(mesh);
   }
 
-  buildAwnings() {
-    if (!this.plan.awnings.length) return;
+  /**
+   * Roof clutter: water tanks, air-conditioner boxes and a stair head on every low roof. Instanced
+   * from one table so the skyline stops reading as bare slab edges.
+   */
+  buildRoofFurniture() {
+    const tanks = [];
+    const boxes = [];
+    const stairHeads = [];
+    for (const building of this.plan.buildings) {
+      const top = building.tiers[building.tiers.length - 1];
+      if (!top || top.h < 6) continue;
+      const y = top.y + top.h;
+      const w = top.w;
+      const d = top.d;
+      // Deterministic scatter inside the roof rectangle, avoiding the parapet.
+      const seed = (Math.abs(building.x * 13 + building.z * 7) % 97) / 97;
+      tanks.push({ x: building.x + (seed - 0.5) * w * 0.42, y, z: building.z + (seed - 0.5) * d * 0.3, r: 0.9 + seed * 0.6 });
+      boxes.push({ x: building.x - w * 0.22, y, z: building.z + d * 0.18, w: 1.5 + seed, h: 0.7, d: 1.2 });
+      if (seed > 0.45) stairHeads.push({ x: building.x + w * 0.24, y, z: building.z - d * 0.2, w: 2.0, h: 1.6, d: 2.0 });
+    }
+    const tankGeometry = new THREE.CylinderGeometry(1, 1, 1, 10);
+    tankGeometry.translate(0, 0.5, 0);
+    const tankMaterial = new THREE.MeshStandardMaterial({ color: 0x9a9384, roughness: 0.88, metalness: 0.1 });
+    const tanksMesh = new THREE.InstancedMesh(tankGeometry, tankMaterial, tanks.length);
+    const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+    boxGeometry.translate(0, 0.5, 0);
+    const boxMaterial = new THREE.MeshStandardMaterial({ color: 0x8d9490, roughness: 0.7, metalness: 0.25 });
+    const boxesMesh = new THREE.InstancedMesh(boxGeometry, boxMaterial, boxes.length + stairHeads.length);
+    const dummy = new THREE.Object3D();
+    tanks.forEach((tank, index) => {
+      dummy.position.set(tank.x, tank.y, tank.z);
+      dummy.rotation.set(0, index * 0.7, 0);
+      dummy.scale.set(tank.r, 1.4, tank.r);
+      dummy.updateMatrix();
+      tanksMesh.setMatrixAt(index, dummy.matrix);
+    });
+    let slot = 0;
+    for (const item of [...boxes, ...stairHeads]) {
+      dummy.position.set(item.x, item.y, item.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(item.w, item.h, item.d);
+      dummy.updateMatrix();
+      boxesMesh.setMatrixAt(slot, dummy.matrix);
+      slot += 1;
+    }
+    tanksMesh.instanceMatrix.needsUpdate = true;
+    boxesMesh.instanceMatrix.needsUpdate = true;
+    tanksMesh.castShadow = true;
+    boxesMesh.castShadow = true;
+    this.group.add(tanksMesh, boxesMesh);
+  }
+
+  /**
+   * Blade signs: projecting neon boxes on brackets over the pavement, the thing that makes a
+   * night street read as a night street. Frames and panels are each one instanced mesh with
+   * per-instance colour, so sixty signs cost two draw calls; only the handful nearest the two
+   * shot streets get a halo sprite.
+   */
+  buildBladeSigns() {
+    const palette = [0xff5f7a, 0x59e0d8, 0xffc857, 0x8fa0ff, 0xff8a4a, 0x7affb0];
+    const signs = [];
+    // Blade signs are cheap (two instanced meshes total), so put them on every street-facing
+    // building in the city. That guarantees the avenue, the marina and the night shot all get
+    // neon, instead of a hard-coded zone that may contain no buildings at all.
+    const wanted = () => true;
+    this.plan.buildings.forEach((building, index) => {
+      const halfW = building.w / 2;
+      const halfD = building.d / 2;
+      let x = building.x;
+      let z = building.z;
+      let yaw = 0;
+      const street = building.street;
+      if (street === 's') { z += halfD + 0.5; yaw = 0; }
+      else if (street === 'n') { z -= halfD + 0.5; yaw = Math.PI; }
+      else if (street === 'e') { x += halfW + 0.5; yaw = Math.PI / 2; }
+      else { x -= halfW + 0.5; yaw = -Math.PI / 2; }
+      if (!wanted(x, z)) return;
+      // Blade signs hang on the facade above the shopfront, not on the pavement. `base` is the
+      // building's ground level, taken from its first tier.
+      const base = building.base ?? building.tiers?.[0]?.y ?? config.slabHeight;
+      const height = Math.min(12, 4.4 + (index % 4) * 1.9);
+      signs.push({ x, z, yaw, y: base + height, colour: palette[index % palette.length], tall: 2.2 + (index % 3) * 0.9 });
+    });
+    if (!signs.length) return;
+    this.neonMaterials = [];
+    const dummy = new THREE.Object3D();
+    const color = new THREE.Color();
+
+    // Frames: dark brackets, one instanced box.
+    const frames = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.26, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0x191d22, roughness: 0.7, metalness: 0.45 }),
+      signs.length,
+    );
+    // Panels: unlit glass, one instanced box with per-instance colour. An unlit basic material
+    // is the right call here: instance colour multiplies diffuse but never emissive, so a
+    // standard material would make every sign glow the same white. Unlit + instance colour gives
+    // each blade its own neon hue, and `toneMapped: false` keeps them hot against the night.
+    const panelMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
+    const panels = new THREE.InstancedMesh(new THREE.BoxGeometry(0.18, 1, 0.68), panelMaterial, signs.length);
+    signs.forEach((sign, index) => {
+      dummy.position.set(sign.x, sign.y, sign.z);
+      dummy.rotation.set(0, sign.yaw, 0);
+      dummy.scale.set(1, sign.tall, 0.9);
+      dummy.updateMatrix();
+      frames.setMatrixAt(index, dummy.matrix);
+      dummy.scale.set(1, sign.tall * 0.88, 1);
+      dummy.updateMatrix();
+      panels.setMatrixAt(index, dummy.matrix);
+      color.setHex(sign.colour);
+      panels.setColorAt(index, color);
+      this.neonMaterials.push({ material: panelMaterial, night: color.clone(), halo: null });
+    });
+    frames.instanceMatrix.needsUpdate = true;
+    panels.instanceMatrix.needsUpdate = true;
+    if (panels.instanceColor) panels.instanceColor.needsUpdate = true;
+    this.neonMaterials.panelMaterial = panelMaterial;
+    this.group.add(frames, panels);
+
+    // A short row of halo sprites only on the signs closest to the night camera.
+    const haloTexture = glowTexture('rgba(255,255,255,0.9)', 'rgba(255,255,255,0)');
+    const near = signs
+      .map((sign, index) => ({ sign, index, d: Math.hypot(sign.x - 44, sign.z - 318) }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 8);
+    for (const { sign, index } of near) {
+      const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: haloTexture,
+        color: sign.colour,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      }));
+      halo.scale.set(3.4, sign.tall * 2.8, 1);
+      halo.position.set(sign.x, sign.y, sign.z);
+      this.group.add(halo);
+      this.neonMaterials[index].halo = halo;
+    }
+  }
+
+  /**
+   * Pooled warm light in the street for the shots. Real point lights are expensive, so only a
+   * handful are placed near the two shot locations; the rest of the city is carried by the baked
+   * lamp pools in Props.
+   */
+  buildStreetLights() {
+    this.streetLights = [];
+    const spots = [
+      // Along the avenue, right where the cover and night cameras stand.
+      { x: 36.3, z: 330, colour: 0xffbe7a, intensity: 34 },
+      { x: 57.7, z: 322, colour: 0xffbe7a, intensity: 28 },
+      { x: 36.3, z: 306, colour: 0xffbe7a, intensity: 26 },
+      { x: 57.7, z: 296, colour: 0xffce8e, intensity: 22 },
+      // The fish-market frontage for the mission shot.
+      { x: 244, z: 356, colour: 0xffc98a, intensity: 24 },
+      { x: 262, z: 344, colour: 0xffd6a0, intensity: 20 },
+    ];
+    for (const spot of spots) {
+      const light = new THREE.PointLight(spot.colour, 0, 26, 1.9);
+      light.position.set(spot.x, 5.4, spot.z);
+      light.userData.day = 0;
+      light.userData.night = spot.intensity;
+      this.group.add(light);
+      this.streetLights.push(light);
+    }
+  }
+
+  buildAwnings() {    if (!this.plan.awnings.length) return;
     const geometry = new THREE.BoxGeometry(1, 1, 1);
-    const material = new THREE.MeshStandardMaterial({ roughness: 0.88 });
+    const material = new THREE.MeshStandardMaterial({ roughness: 0.88, emissive: 0x000000 });
+    this.awningMaterial = material;
     const mesh = new THREE.InstancedMesh(geometry, material, this.plan.awnings.length);
     const dummy = new THREE.Object3D();
     const color = new THREE.Color();
@@ -311,11 +483,29 @@ export default class Buildings {
 
   setPeriod(period) {
     const night = period === 'night';
-    this.warmMaterial.emissiveIntensity = night ? 1.55 : 0.08;
-    this.coolMaterial.emissiveIntensity = night ? 1.15 : 0.05;
-    this.shopLit.emissiveIntensity = night ? 1.0 : 0.1;
+    this.warmMaterial.emissiveIntensity = night ? 1.9 : 0.08;
+    this.coolMaterial.emissiveIntensity = night ? 1.4 : 0.05;
+    this.shopLit.emissiveIntensity = night ? 1.5 : 0.1;
+    if (this.awningMaterial) this.awningMaterial.emissiveIntensity = night ? 0.22 : 0;
     for (const material of this.signMaterials) {
-      material.color.setScalar(night ? 1 : 0.72);
+      material.color.setScalar(night ? 1 : 0.78);
     }
+    // Neon tubes light up at night; by day they are just coloured glass. The panel colour is per
+    // instance (instanced colour multiplies the diffuse), so the emissive is a single white that
+    // is switched on with the period, and the per-instance tint gives each sign its hue.
+    if (this.neonMaterials) {
+      const panelMaterial = this.neonMaterials.panelMaterial;
+      if (panelMaterial) {
+        // By day an unlit panel is just painted glass; at night it is a lit tube.
+        panelMaterial.color.setScalar(night ? 1 : 0.42);
+      }
+      for (const entry of this.neonMaterials) {
+        if (entry.halo) entry.halo.material.opacity = night ? 0.55 : 0;
+      }
+    }
+    if (this.streetLights) {
+      for (const light of this.streetLights) light.intensity = night ? light.userData.night : 0;
+    }
+    if (this.awningMaterial) this.awningMaterial.emissiveIntensity = night ? 0.22 : 0;
   }
 }

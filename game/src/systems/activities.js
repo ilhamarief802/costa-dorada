@@ -93,6 +93,7 @@ export default class Activities {
       { kind: 'taxi', x: 62, z: 338.4, color: 0xf0b93f, label: 'TAXI RANK' },
       { kind: 'race', x: 0, z: 329, color: 0xe0543f, label: 'STREET RACE' },
       { kind: 'stunt', x: 172, z: 338.2, color: 0x58b8c6, label: 'STUNT JUMP' },
+      { kind: 'heist', x: 232, z: 372, color: 0x9fd76a, label: 'DOCK JOB' },
     ];
     for (const marker of this.markers) {
       const group = ring(marker.color);
@@ -162,6 +163,19 @@ export default class Activities {
     } else if (kind === 'stunt') {
       this.active = { kind, title: 'STUNT JUMP', timer: 70, armed: true };
       this.hud.setActivity('STUNT JUMP', 'Hit the ramp at speed. Cash for air.');
+    } else if (kind === 'heist') {
+      // The dock job: run the cargo from the fish market pier to the freight gate in three hops
+      // before the watch clock runs out. A pure driving parcel run, on the water side of town.
+      const stops = [
+        { x: 306, z: 396, label: 'the end of the east pier' },
+        { x: 232, z: 396, label: 'the west pier head' },
+        { x: 158, z: 348, label: 'the freight gate' },
+      ];
+      this.active = {
+        kind, title: 'DOCK JOB', stops, stop: 0, timer: 115,
+      };
+      this.hud.setActivity('DOCK JOB', `Run the cargo to ${stops[0].label}.`);
+      this.hud.minimap?.setActivity({ x: stops[0].x, z: stops[0].z, color: 0x9fd76a });
     }
     this.hud.setActivityTimer(this.active.timer);
     this.events.emit('activity-started', { kind });
@@ -267,6 +281,29 @@ export default class Activities {
     }
   }
 
+  updateHeist(dt) {
+    const activity = this.active;
+    if (!activity || activity.kind !== 'heist') return;
+    const pos = this.vehicle.occupied ? this.vehicle.pos : this.player.pos;
+    const target = activity.stops[activity.stop];
+    if (!target) return;
+    const distance = Math.hypot(pos.x - target.x, pos.z - target.z);
+    if (distance > 9) return;
+    activity.stop += 1;
+    if (activity.stop >= activity.stops.length) {
+      const reward = 800;
+      this.state.money += reward;
+      this.hud.setMoney(this.state.money);
+      this.hud.spawnMessage(`CARGO DELIVERED  +$${reward}`, '#9fd76a');
+      this.events.emit('activity-complete', { kind: 'heist', reward });
+      this.end();
+      return;
+    }
+    const next = activity.stops[activity.stop];
+    this.hud.setActivity('DOCK JOB', `Run the cargo to ${next.label}.`);
+    this.hud.minimap?.setActivity({ x: next.x, z: next.z, color: 0x9fd76a });
+  }
+
   end() {
     this.active = null;
     this.hud.setActivity(null);
@@ -306,6 +343,7 @@ export default class Activities {
     if (this.active.kind === 'race') this.updateRace(dt);
     else if (this.active.kind === 'taxi') this.updateTaxi(dt);
     else if (this.active.kind === 'stunt') this.updateStunt();
+    else if (this.active.kind === 'heist') this.updateHeist(dt);
   }
 
   prompt(pos) {

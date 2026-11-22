@@ -3,7 +3,7 @@
 // enemies shoot back, and any failed stage/expired timer offers a restart.
 import config from '../core/config.js';
 import Rng from '../core/rng.js';
-import { glowTexture } from '../core/assets.js';
+import { glowTexture, contactShadowTexture } from '../core/assets.js';
 import { clamp, rayBox, shortestAngle, resolveCircleBox } from '../core/math.js';
 
 const THREE = globalThis.THREE;
@@ -103,6 +103,25 @@ export default class Missions {
           { type: 'reach', x: north.x, z: north.z, radius: 10, needVehicle: true, text: 'Checkpoint one: the north boulevard.' },
           { type: 'reach', x: west.x, z: west.z, radius: 10, needVehicle: true, text: 'Checkpoint two: the west blocks.' },
           { type: 'reach', x: east.x, z: east.z, radius: 10, needVehicle: true, text: 'Checkpoint three: the east strip.' },
+        ],
+      },
+      // The boat leg: the marina job goes out to the breakwater pier head, then back under heat.
+      {
+        chapter: 'CHAPTER IV', title: 'SLACK TIDE', reward: 3400,
+        stages: [
+          { type: 'reach', x: marina.x, z: marina.z, radius: 9, text: 'Get to the marina and take the launch.' },
+          { type: 'reach', x: 270, z: 416, radius: 10, needVehicle: true, text: 'Run the launch out along the pier to the breakwater.' },
+          { type: 'escape', heat: 2, text: 'Shake the harbour patrol before you dock.' },
+        ],
+      },
+      // The warehouse raid: a straight kill-and-carry job, then a getaway.
+      {
+        chapter: 'CHAPTER IV', title: 'WAREHOUSE NINE', reward: 3800,
+        stages: [
+          { type: 'reach', x: dock.x, z: dock.z, radius: 11, text: 'Hit the lock-up on the east dock.' },
+          { type: 'kill', x: dock.x, z: dock.z, count: 6, radius: 24, text: 'Clear the warehouse crew.' },
+          { type: 'steal', text: 'Take their van before the backup arrives.' },
+          { type: 'escape', heat: 3, needVehicle: true, text: 'Get the van off the dock and lose the tail.' },
         ],
       },
       {
@@ -211,37 +230,99 @@ export default class Missions {
     }
   }
 
+  /**
+   * One armed gangster: a readable little silhouette with a jacket, shoulders, arms holding a
+   * pistol out toward the player, legs and a head with hair. Small enough to instance later, but
+   * built from parts so the pose can be set for a still frame.
+   */
   spawnEnemy(x, z) {
     const group = new THREE.Group();
-    const shirt = new THREE.MeshStandardMaterial({ color: 0x5a1e1e, roughness: 0.85 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x22252a, roughness: 0.9 });
+    const jacket = new THREE.MeshStandardMaterial({ color: 0x4a2320, roughness: 0.86 });
+    const shirt = new THREE.MeshStandardMaterial({ color: 0xd8cdb6, roughness: 0.88 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x1e2126, roughness: 0.9 });
     const skin = new THREE.MeshStandardMaterial({ color: 0xb87a52, roughness: 0.8 });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.66, 0.3), shirt);
-    body.position.y = 1.12;
-    body.castShadow = true;
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.28, 0.26), skin);
-    head.position.y = 1.6;
+    const hair = new THREE.MeshStandardMaterial({ color: 0x1a1310, roughness: 0.95 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x14171a, metalness: 0.55, roughness: 0.4 });
+
+    // Torso: a jacket with a lighter shirt showing down the middle.
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.66, 0.29), jacket);
+    torso.position.y = 1.12;
+    torso.castShadow = true;
+    const placket = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.5, 0.02), shirt);
+    placket.position.set(0, 1.12, 0.15);
+    const hips = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.2, 0.27), dark);
+    hips.position.y = 0.74;
+
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.27, 0.25), skin);
+    head.position.y = 1.62;
     head.castShadow = true;
-    const legL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.8, 0.2), dark);
-    legL.position.set(-0.14, 0.4, 0);
-    const legR = legL.clone();
-    legR.position.x = 0.14;
-    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.1, 0.5), new THREE.MeshStandardMaterial({ color: 0x17191c, metalness: 0.5, roughness: 0.4 }));
-    gun.position.set(0.32, 1.2, 0.3);
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.1, 0.27), hair);
+    cap.position.y = 1.74;
+
+    // Legs, planted apart in a firing stance.
+    const legGeometry = new THREE.BoxGeometry(0.17, 0.76, 0.19);
+    const legL = new THREE.Mesh(legGeometry, dark);
+    legL.position.set(-0.13, 0.4, 0.05);
+    legL.rotation.z = 0.06;
+    const legR = new THREE.Mesh(legGeometry, dark);
+    legR.position.set(0.13, 0.4, -0.06);
+    legR.rotation.z = -0.06;
+
+    // Arms out front, both hands on the pistol.
+    const armGeometry = new THREE.BoxGeometry(0.15, 0.15, 0.56);
+    const armL = new THREE.Mesh(armGeometry, jacket);
+    armL.position.set(-0.22, 1.22, 0.26);
+    armL.rotation.y = -0.24;
+    const armR = new THREE.Mesh(armGeometry, jacket);
+    armR.position.set(0.2, 1.22, 0.28);
+    armR.rotation.y = 0.2;
+
+    // The crew holds the pistol out to one side, so the flash sits beside the body silhouette
+    // instead of reading as a lamp stuck on the chest.
+    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, 0.42), steel);
+    gun.position.set(0.3, 1.2, 0.5);
+    gun.rotation.y = -0.14;
+    const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.16, 6), steel);
+    muzzle.rotation.x = Math.PI / 2;
+    muzzle.rotation.y = -0.14;
+    muzzle.position.set(0.33, 1.2, 0.71);
+
+    // Muzzle flash: two stacked sprites, sized to the bore rather than to the body.
     const flash = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: glowTexture('rgba(255,236,180,1)', 'rgba(255,140,40,0)'), color: 0xffcf7a, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+      map: glowTexture('rgba(255,244,206,1)', 'rgba(255,150,40,0)'),
+      color: 0xffd88a, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
     }));
-    flash.scale.set(0.5, 0.5, 1);
+    flash.scale.set(0.42, 0.42, 1);
+    flash.position.set(0.35, 1.2, 0.82);
     flash.visible = false;
-    group.add(body, head, legL, legR, gun, flash);
+    const spike = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTexture('rgba(255,196,120,0.5)', 'rgba(255,110,20,0)'),
+      color: 0xffb066, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+    }));
+    spike.scale.set(0.86, 0.86, 1);
+    spike.position.set(0.35, 1.2, 0.8);
+    spike.visible = false;
+
+    // Contact shadow, so the crew stands on the quay instead of floating over it.
+    const shadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 1.1),
+      new THREE.MeshBasicMaterial({ map: contactShadowTexture(), transparent: true, opacity: 0.74, depthWrite: false, color: 0x000000 }),
+    );
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.y = 0.035;
+    shadow.renderOrder = 2;
+
+    group.add(torso, placket, hips, head, cap, legL, legR, armL, armR, gun, muzzle, flash, spike, shadow);
     const ground = this.plan.heightAt(x, z);
     group.position.set(x, ground, z);
     this.group.add(group);
-    this.enemies.push({
-      group, flash, x, z, ground, hp: 100, alive: true,
+    const enemy = {
+      group, flash, spike, x, z, ground, hp: 100, alive: true,
       yaw: this.rng.float(0, 6.28), wait: this.rng.float(0.4, 1.6), flashLife: 0, deadT: 0,
       walk: this.rng.float(0, 6.28),
-    });
+    };
+    this.enemies.push(enemy);
+    return enemy;
   }
 
   clearEnemies() {
@@ -291,15 +372,18 @@ export default class Missions {
 
       if (enemy.flashLife > 0) {
         enemy.flashLife -= dt;
-        if (enemy.flashLife <= 0) enemy.flash.visible = false;
+        if (enemy.flashLife <= 0) {
+          enemy.flash.visible = false;
+          if (enemy.spike) enemy.spike.visible = false;
+        }
       }
       if (distance < 34 && distance > 2) {
         enemy.wait -= dt;
         if (enemy.wait <= 0) {
           enemy.wait = 1.15 + this.rng.float(0, 0.9);
           enemy.flash.visible = true;
-          enemy.flashLife = 0.05;
-          enemy.flash.position.set(0.32, 1.2, 0.55);
+          if (enemy.spike) enemy.spike.visible = true;
+          enemy.flashLife = 0.07;
           const eye = { x: enemy.x, y: enemy.ground + 1.5, z: enemy.z };
           const chest = { x: playerPos.x, y: playerPos.y + 1.15, z: playerPos.z };
           if (this.hasLineOfSight(eye, chest)) {
@@ -459,24 +543,53 @@ export default class Missions {
     }
   }
 
-  stageShot() {
-    const point = blockCenter(this.plan, 1, 4);
+  /**
+   * The mission frame: activate the marina job, then plant the player and the crew where the
+   * camera wants them. `framing` receives `{camera, target, at}` from the shot rig so positions
+   * are expressed in camera space and are guaranteed to be inside the picture.
+   */
+  stageShot(framing) {
+    const cam = framing?.camera ?? { x: 248, y: 2, z: 349 };
+    const look = framing?.target ?? { x: 259, y: 2.1, z: 372 };
+    const at = framing?.at ?? ((camera, target, forward, lateral) => ({ x: camera.x + forward, z: camera.z + lateral }));
+    const focus = at(cam, look, 12.5, 1.0);
+
     this.activate(2, 0, true);
     this.index = 2;
     this.stage = 0;
     this.active = true;
-    this.marker.x = point.x;
-    this.marker.z = point.z;
+    this.marker.x = focus.x;
+    this.marker.z = focus.z;
     this.marker.active = true;
-    this.beacon.position.set(point.x, this.plan.heightAt(point.x, point.z), point.z);
+    this.beacon.position.set(focus.x, this.plan.heightAt(focus.x, focus.z), focus.z);
     this.beacon.visible = true;
-    this.hud.setMission('CHAPTER II', 'THE GREEN ROOM', 'Shoot out the crew holding the park.');
+    this.hud.setMission('CHAPTER II', 'THE GREEN ROOM', 'Shoot out the crew holding the fish market.');
+
+    // The crew: two out front trading fire, two further back by the stalls.
     this.clearEnemies();
-    for (let i = 0; i < 4; i += 1) {
-      this.spawnEnemy(point.x + Math.cos(i * 1.3) * 6, point.z + Math.sin(i * 1.3) * 6);
-    }
-    this.updateEnemies(0, this.player.pos);
-    this.hud.minimap?.setMission({ x: point.x, z: point.z, color: 0xffc759 });
-    return point;
+    const front = [
+      at(cam, look, 7.4, -2.1),
+      at(cam, look, 8.6, 2.2),
+      at(cam, look, 15.5, -4.6),
+      at(cam, look, 19.0, 4.2),
+    ];
+    front.forEach((spot, index) => {
+      const enemy = this.spawnEnemy(spot.x, spot.z);
+      if (enemy) {
+        enemy.yaw = Math.atan2(cam.x - spot.x, cam.z - spot.z);
+        enemy.group.rotation.y = enemy.yaw;
+        enemy.wait = 0;
+        // The two nearest are mid-shot: muzzle flash lit, weapon angled at the player.
+        if (index < 2) {
+          enemy.flash.visible = true;
+          if (enemy.spike) enemy.spike.visible = true;
+          enemy.flashLife = 999;
+          enemy.flash.scale.set(0.9, 0.9, 1);
+        }
+        enemy.group.position.y = this.plan.heightAt(spot.x, spot.z);
+      }
+    });
+    this.hud.minimap?.setMission({ x: focus.x, z: focus.z, color: 0xffc759 });
+    return { x: focus.x, z: focus.z, player: at(cam, look, 2.6, -1.6), aim: at(cam, look, 9, 0) };
   }
 }

@@ -119,9 +119,9 @@ export default class CameraRig {
     }
   }
 
-  setShot(position, target) {
+  setShot(position, target, fov = 54) {
     this.camera.position.copy(position);
-    this.camera.fov = 54;
+    this.camera.fov = fov;
     this.camera.updateProjectionMatrix();
     this.camera.lookAt(target);
     this.camera.updateMatrixWorld();

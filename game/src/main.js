@@ -13,6 +13,8 @@ import Blocks from './world/blocks.js';
 import Buildings from './world/buildings.js';
 import Palms from './world/palms.js';
 import Props from './world/props.js';
+import StreetDetail from './world/streetdetail.js';
+import Gulls from './world/gulls.js';
 import Landmarks from './world/landmarks.js';
 import Sky from './world/sky.js';
 import Weather from './world/weather.js';
@@ -28,6 +30,7 @@ import { saveGame, loadGame, hasSave } from './systems/save.js';
 import CameraRig from './camera/rig.js';
 import Hud from './ui/hud.js';
 import Menus from './ui/menus.js';
+import Sound from './systems/sound.js';
 import stageShot from './shots.js';
 import { environmentTexture } from './core/assets.js';
 
@@ -72,7 +75,7 @@ pmrem.dispose();
 const plan = buildPlan(seed);
 const events = new Events();
 const input = new Input(canvas);
-const weatherSky = new Sky(plan, scene);
+const weatherSky = new Sky(plan, scene, camera);
 
 const terrain = new Terrain(plan);
 const water = new Water(plan);
@@ -81,14 +84,18 @@ const blocks = new Blocks(plan);
 const buildings = new Buildings(plan);
 const palms = new Palms(plan);
 const props = new Props(plan);
+const streetDetail = new StreetDetail(plan);
+const gulls = new Gulls(plan);
 const landmarks = new Landmarks(plan);
 scene.add(weatherSky.group);
 scene.add(terrain.group);
 scene.add(water.group);
 scene.add(roads.group);
 scene.add(blocks.group);
+scene.add(streetDetail.group);
 scene.add(buildings.group);
 scene.add(palms.group);
+scene.add(gulls.group);
 scene.add(props.group);
 scene.add(landmarks.group);
 
@@ -98,6 +105,8 @@ const weather = new Weather({
   water,
   buildings,
   props,
+  streetDetail,
+  gulls,
   landmarks,
   renderer,
   scene,
@@ -146,7 +155,8 @@ const activities = new Activities({ plan, scene, player, vehicle, hud, events, s
 const rig = new CameraRig(camera, plan, input);
 rig.snap('foot', player, vehicle);
 
-let audio = null;
+const sound = new Sound();
+
 let saveTimer = 12;
 
 events.on('wanted', (level) => hud.setWanted(level));
@@ -183,28 +193,23 @@ events.on('stunt-jump', () => {
 });
 
 function ensureAudio() {
-  if (audio) return;
-  try {
-    const Context = window.AudioContext || window.webkitAudioContext;
-    if (Context) audio = new Context();
-  } catch {
-    audio = null;
-  }
+  sound.unlock();
+  police.unlockAudio();
+}
+
+/** The first key press is the gesture browsers require before audio may start. */
+function armAudioOnFirstKey() {
+  const arm = () => {
+    sound.unlock();
+    window.removeEventListener('keydown', arm);
+    window.removeEventListener('pointerdown', arm);
+  };
+  window.addEventListener('keydown', arm);
+  window.addEventListener('pointerdown', arm);
 }
 
 function playGunshot(volume = 1) {
-  if (!audio) return;
-  const now = audio.currentTime;
-  const oscillator = audio.createOscillator();
-  const gain = audio.createGain();
-  oscillator.type = 'square';
-  oscillator.frequency.setValueAtTime(180, now);
-  oscillator.frequency.exponentialRampToValueAtTime(52, now + 0.09);
-  gain.gain.setValueAtTime(0.05 * volume, now);
-  gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.13);
-  oscillator.connect(gain).connect(audio.destination);
-  oscillator.start(now);
-  oscillator.stop(now + 0.14);
+  sound.gunshot(volume, volume < 0.7 ? 1.35 : 1);
 }
 
 function syncHud() {
@@ -532,6 +537,20 @@ function update(dt) {
     saveTimer = 12;
     saveState();
   }
+
+  // Audio: engine note and tyre slip follow the car, the siren follows the wanted level, and the
+  // radio chatter prints a line on the HUD now and then.
+  const nearWater = Math.abs((state.driving ? vehicle.pos.z : player.pos.z) - 340) < 70;
+  sound.update(dt, {
+    speedKmh: state.driving ? vehicle.speedKmh : 0,
+    slip: state.driving ? Math.abs(vehicle.steer) * Math.min(1, Math.abs(vehicle.speedKmh) / 60) : 0,
+    driving: state.driving,
+    wanted: state.wanted,
+    nearWater,
+  });
+  sound.tick(dt);
+  const line = sound.nextRadioLine(dt);
+  if (line) hud.spawnMessage(line, '#a8c8d8');
 }
 
 function currentPrompt() {
@@ -587,16 +606,22 @@ const game = {
   combat,
   activities,
   props,
+  streetDetail,
+  gulls,
   weather,
   sky: weatherSky,
   rig,
   hud,
   menus,
+  sound,
   state,
   loop,
   events,
   stage: stageElement,
 };
+
+// Browsers only allow audio after a gesture; arm it on the very first key or click.
+armAudioOnFirstKey();
 
 window.__COSTA = {
   get mode() {

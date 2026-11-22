@@ -263,20 +263,259 @@ export function glowCard(color, size = 1) {
   return sprite;
 }
 
+/** A soft trapezoid of light for the road in front of a car at night. */
+export function headlightConeTexture() {
+  if (signs.has('headlight')) return signs.get('headlight');
+  const element = canvas(128, 256);
+  const context = element.getContext('2d');
+  context.clearRect(0, 0, 128, 256);
+  // The pool of light: bright and narrow at the bumper, wide and faint at the far edge.
+  for (let y = 0; y < 256; y += 1) {
+    const t = y / 255;
+    const halfWidth = 22 + t * 46;
+    const alpha = (1 - t) ** 1.5 * 0.9;
+    const gradient = context.createLinearGradient(64 - halfWidth, 0, 64 + halfWidth, 0);
+    gradient.addColorStop(0, 'rgba(255,220,170,0)');
+    gradient.addColorStop(0.5, `rgba(255,226,182,${alpha})`);
+    gradient.addColorStop(1, 'rgba(255,220,170,0)');
+    context.fillStyle = gradient;
+    context.fillRect(64 - halfWidth, y, halfWidth * 2, 1);
+  }
+  const texture = new THREE.CanvasTexture(element);
+  if (THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+  else texture.encoding = THREE.sRGBEncoding;
+  signs.set('headlight', texture);
+  return texture;
+}
+
+/**
+ * A contact blob for the ground under every dynamic object. Two stacked falloffs: a tight
+ * near-black core that sells the touch-down point, and a wide soft skirt for the ambient
+ * occlusion. Alpha is deliberately high because it is multiplied by a low material opacity.
+ */
 export function contactShadowTexture() {
   if (signs.has('contact')) return signs.get('contact');
   const element = canvas(128, 128);
   const context = element.getContext('2d');
-  const gradient = context.createRadialGradient(64, 64, 6, 64, 64, 62);
-  gradient.addColorStop(0, 'rgba(0,0,0,0.55)');
-  gradient.addColorStop(0.55, 'rgba(0,0,0,0.28)');
+  const gradient = context.createRadialGradient(64, 64, 2, 64, 64, 63);
+  gradient.addColorStop(0, 'rgba(0,0,0,0.98)');
+  gradient.addColorStop(0.28, 'rgba(0,0,0,0.86)');
+  gradient.addColorStop(0.55, 'rgba(0,0,0,0.52)');
+  gradient.addColorStop(0.78, 'rgba(0,0,0,0.20)');
   gradient.addColorStop(1, 'rgba(0,0,0,0)');
   context.fillStyle = gradient;
   context.fillRect(0, 0, 128, 128);
   const texture = new THREE.CanvasTexture(element);
   if (THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
   else texture.encoding = THREE.sRGBEncoding;
+  texture.anisotropy = 4;
   signs.set('contact', texture);
+  return texture;
+}
+
+/**
+ * A grimy square decal sheet for the road and pavement: tar patches, oil drips, gum, a drain
+ * grate and scattered litter. Used as a small instanced stamp so the ground stops reading flat.
+ */
+export function grimeTexture() {
+  if (signs.has('grime')) return signs.get('grime');
+  const size = 256;
+  const element = canvas(size, size);
+  const context = element.getContext('2d');
+  const random = seeded(0x3ce1);
+  context.clearRect(0, 0, size, size);
+  // Bitumen repair patches.
+  for (let i = 0; i < 5; i += 1) {
+    context.fillStyle = `rgba(${28 + random() * 14},${28 + random() * 14},${32 + random() * 14},${0.45 + random() * 0.35})`;
+    context.beginPath();
+    const cx = random() * size;
+    const cy = random() * size;
+    const r = 18 + random() * 46;
+    for (let a = 0; a < 9; a += 1) {
+      const ang = (a / 9) * Math.PI * 2;
+      const rr = r * (0.62 + random() * 0.5);
+      const px = cx + Math.cos(ang) * rr;
+      const py = cy + Math.sin(ang) * rr;
+      if (a === 0) context.moveTo(px, py);
+      else context.lineTo(px, py);
+    }
+    context.closePath();
+    context.fill();
+  }
+  // Oil and water stains.
+  for (let i = 0; i < 12; i += 1) {
+    const x = random() * size;
+    const y = random() * size;
+    const r = 6 + random() * 22;
+    const stain = context.createRadialGradient(x, y, 1, x, y, r);
+    stain.addColorStop(0, 'rgba(14,13,16,0.5)');
+    stain.addColorStop(1, 'rgba(14,13,16,0)');
+    context.fillStyle = stain;
+    context.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // Drain grate.
+  context.fillStyle = 'rgba(22,24,26,0.92)';
+  context.fillRect(96, 180, 58, 34);
+  context.fillStyle = 'rgba(62,66,68,0.9)';
+  for (let i = 0; i < 6; i += 1) context.fillRect(100 + i * 9, 184, 5, 26);
+  // Litter: wrappers and a flattened cup.
+  const litter = ['rgba(226,214,186,0.85)', 'rgba(196,71,58,0.8)', 'rgba(180,196,170,0.8)', 'rgba(214,178,96,0.8)'];
+  for (let i = 0; i < 16; i += 1) {
+    context.fillStyle = litter[Math.floor(random() * litter.length)];
+    const x = random() * size;
+    const y = random() * size;
+    context.save();
+    context.translate(x, y);
+    context.rotate(random() * 3.14);
+    context.fillRect(-3, -2, 5 + random() * 5, 3 + random() * 3);
+    context.restore();
+  }
+  // Hairline cracks.
+  context.strokeStyle = 'rgba(20,20,23,0.45)';
+  context.lineWidth = 1;
+  for (let i = 0; i < 7; i += 1) {
+    context.beginPath();
+    let x = random() * size;
+    let y = random() * size;
+    context.moveTo(x, y);
+    for (let s = 0; s < 5; s += 1) {
+      x += (random() - 0.5) * 64;
+      y += (random() - 0.5) * 64;
+      context.lineTo(x, y);
+    }
+    context.stroke();
+  }
+  const texture = new THREE.CanvasTexture(element);
+  if (THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+  else texture.encoding = THREE.sRGBEncoding;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.anisotropy = 4;
+  signs.set('grime', texture);
+  return texture;
+}
+
+/**
+ * A lit shopfront seen through glass: warm interior wash, shelves, a counter, silhouettes of
+ * people inside. Tiled onto the ground-floor band of every street facade.
+ */
+export function storefrontTexture(variant = 0) {
+  const key = `storefront${variant}`;
+  if (signs.has(key)) return signs.get(key);
+  const width = 512;
+  const height = 256;
+  const element = canvas(width, height);
+  const context = element.getContext('2d');
+  const random = seeded(0x7711 + variant * 977);
+  const moods = [
+    { wall: '#3a2415', lamp: '#ffca74', glow: 'rgba(255,196,110,0.55)' },
+    { wall: '#152a2b', lamp: '#96e6d8', glow: 'rgba(140,230,215,0.45)' },
+    { wall: '#2c1a2b', lamp: '#ffa0c4', glow: 'rgba(255,150,190,0.45)' },
+    { wall: '#241d13', lamp: '#ffd9a0', glow: 'rgba(255,214,150,0.5)' },
+  ];
+  const mood = moods[variant % moods.length];
+  context.fillStyle = mood.wall;
+  context.fillRect(0, 0, width, height);
+  // Warm interior wash from the ceiling lights.
+  const wash = context.createLinearGradient(0, 0, 0, height);
+  wash.addColorStop(0, mood.glow);
+  wash.addColorStop(0.55, 'rgba(0,0,0,0)');
+  wash.addColorStop(1, 'rgba(0,0,0,0.35)');
+  context.fillStyle = wash;
+  context.fillRect(0, 0, width, height);
+  // Ceiling strip lights.
+  for (let i = 0; i < 4; i += 1) {
+    context.fillStyle = mood.lamp;
+    context.globalAlpha = 0.8;
+    context.fillRect(30 + i * 122, 26, 84, 7);
+    context.globalAlpha = 1;
+  }
+  // Back-wall shelving and goods.
+  for (let i = 0; i < 3; i += 1) {
+    const y = 78 + i * 46;
+    context.fillStyle = 'rgba(0,0,0,0.32)';
+    context.fillRect(18, y + 26, width - 36, 5);
+    for (let j = 0; j < 26; j += 1) {
+      context.fillStyle = `hsl(${Math.floor(random() * 360)},${28 + random() * 40}%,${34 + random() * 30}%)`;
+      context.globalAlpha = 0.75;
+      context.fillRect(22 + j * 18, y, 12, 22);
+      context.globalAlpha = 1;
+    }
+  }
+  // Counter.
+  context.fillStyle = 'rgba(20,14,10,0.85)';
+  context.fillRect(40, 176, width - 80, 52);
+  context.fillStyle = 'rgba(255,226,180,0.3)';
+  context.fillRect(44, 176, width - 88, 5);
+  // Two silhouettes behind the counter.
+  context.fillStyle = 'rgba(10,8,7,0.82)';
+  for (const sx of [150, 330]) {
+    context.beginPath();
+    context.arc(sx, 132, 15, 0, Math.PI * 2);
+    context.fill();
+    context.fillRect(sx - 20, 146, 40, 34);
+  }
+  // Mullion frame between the panes.
+  context.fillStyle = 'rgba(28,22,17,0.9)';
+  context.fillRect(0, 0, 8, height);
+  context.fillRect(width - 8, 0, 8, height);
+  context.fillRect(width / 2 - 4, 0, 8, height);
+  const result = new THREE.CanvasTexture(element);
+  if (THREE.SRGBColorSpace) result.colorSpace = THREE.SRGBColorSpace;
+  else result.encoding = THREE.sRGBEncoding;
+  result.anisotropy = 4;
+  signs.set(key, result);
+  return result;
+}
+
+/** Candy-striped awning cloth for the shop canopies along the promenade. */
+export function awningTexture() {
+  if (signs.has('awning')) return signs.get('awning');
+  const element = canvas(128, 128);
+  const context = element.getContext('2d');
+  context.fillStyle = '#f2e6cc';
+  context.fillRect(0, 0, 128, 128);
+  context.fillStyle = '#c4473a';
+  for (let i = 0; i < 8; i += 1) context.fillRect(i * 16, 0, 8, 128);
+  context.fillStyle = 'rgba(0,0,0,0.12)';
+  for (let i = 0; i < 8; i += 1) context.fillRect(i * 16 + 8, 0, 2, 128);
+  const texture = new THREE.CanvasTexture(element);
+  if (THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+  else texture.encoding = THREE.sRGBEncoding;
+  signs.set('awning', texture);
+  return texture;
+}
+
+/** Vertical neon blade sign, self-lit, for the night avenue. */
+export function bladeSignTexture(text, hue = 190) {
+  const key = `blade|${text}|${hue}`;
+  if (signs.has(key)) return signs.get(key);
+  const width = 128;
+  const height = 512;
+  const element = canvas(width, height);
+  const context = element.getContext('2d');
+  context.fillStyle = '#0a0d12';
+  context.fillRect(0, 0, width, height);
+  const ink = `hsl(${hue},92%,66%)`;
+  context.strokeStyle = ink;
+  context.lineWidth = 4;
+  context.shadowColor = `hsl(${hue},100%,60%)`;
+  context.shadowBlur = 18;
+  context.strokeRect(8, 8, width - 16, height - 16);
+  context.shadowBlur = 26;
+  context.fillStyle = ink;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  const letters = text.split('');
+  const size = Math.min(74, Math.floor((height - 70) / Math.max(1, letters.length)));
+  context.font = `800 ${size}px "Arial Narrow", "Helvetica Neue", sans-serif`;
+  const start = height / 2 - ((letters.length - 1) * size * 1.03) / 2;
+  letters.forEach((letter, index) => context.fillText(letter, width / 2, start + index * size * 1.03));
+  const texture = new THREE.CanvasTexture(element);
+  if (THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+  else texture.encoding = THREE.sRGBEncoding;
+  texture.anisotropy = 4;
+  signs.set(key, texture);
   return texture;
 }
 
@@ -358,6 +597,11 @@ export default {
   signMaterial,
   glowCard,
   contactShadowTexture,
+  headlightConeTexture,
+  grimeTexture,
+  storefrontTexture,
+  awningTexture,
+  bladeSignTexture,
   makeSkyTexture,
   asphaltTexture,
   pavingTexture,

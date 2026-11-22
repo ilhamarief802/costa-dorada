@@ -44,6 +44,12 @@ body {
   cursor: none;
 }
 
+/* The capture path is a poster, not a play session: the reticle is correct in play and noise
+   on a still frame, so the shot rig turns it off. Waypoints and the objective card stay. */
+#stage.capture .crosshair {
+  display: none;
+}
+
 #view {
   position: absolute;
   inset: 0;
@@ -239,7 +245,8 @@ body {
   margin-top: 0.22em;
   font-size: 0.48em;
   letter-spacing: 0.28em;
-  color: rgba(244, 236, 220, 0.58);
+  color: rgba(248, 242, 228, 0.86);
+  text-shadow: 0 0 0.5em rgba(0, 0, 0, 0.85), 0 0.06em 0.12em rgba(0, 0, 0, 0.9);
 }
 
 .bottom-left {

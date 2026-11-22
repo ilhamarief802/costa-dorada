@@ -5,9 +5,20 @@ const errors = [];
 p.on('pageerror', (e) => errors.push(e.message));
 p.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 await p.goto('http://localhost:8080/?seed=1', { waitUntil: 'load', timeout: 120000 });
-await p.waitForTimeout(600);
-await p.click('text=NEW GAME');
-await p.waitForTimeout(600);
+await p.waitForTimeout(3500);
+// Click through the DOM rather than the pointer: the title panel fades in and Playwright's
+// stability check times out against the CSS transition even though the button is live.
+for (let attempt = 0; attempt < 10; attempt += 1) {
+  const clicked = await p.evaluate(() => {
+    const target = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('NEW GAME'));
+    if (!target || target.disabled) return false;
+    target.click();
+    return true;
+  });
+  if (clicked) break;
+  await p.waitForTimeout(500);
+}
+await p.waitForTimeout(900);
 
 const step = (frames, keys = []) => p.evaluate(({ frames, keys }) => {
   const g = window.__COSTA_GAME;

@@ -2,7 +2,7 @@
 // arcade movement (sprint, jump, crouch) and a circle-vs-AABB collision pass against the plan.
 import config from '../core/config.js';
 import { clamp, damp, dampAngle, angleLerp, resolveCircleBox } from '../core/math.js';
-import { contactShadowTexture } from '../core/assets.js';
+import { contactShadowTexture, glowTexture } from '../core/assets.js';
 
 const THREE = globalThis.THREE;
 
@@ -105,10 +105,51 @@ export default class Player {
       const hand = box(0.1, 0.11, 0.12, skin);
       hand.position.y = -0.3;
       elbow.add(hand);
-      return { shoulder, elbow };
+      return { shoulder, elbow, hand };
     };
     this.armL = arm(-1);
     this.armR = arm(1);
+
+    // The sidearm lives in the right hand. Oversized on purpose: at third-person distance a
+    // true-scale pistol is three pixels wide and unreadable, so it is built to read as a
+    // silhouette (long slide, dark grip, bright muzzle) rather than to be accurate.
+    const steel = new THREE.MeshStandardMaterial({ color: 0x0e1114, metalness: 0.75, roughness: 0.28 });
+    const grip = new THREE.MeshStandardMaterial({ color: 0x3a2b1e, roughness: 0.85 });
+    this.pistol = new THREE.Group();
+    const slide = box(0.1, 0.13, 0.46, steel);
+    slide.position.set(0, 0.02, 0.16);
+    const stock = box(0.09, 0.24, 0.12, grip);
+    stock.position.set(0, -0.14, -0.02);
+    stock.rotation.x = -0.22;
+    const trigger = box(0.06, 0.09, 0.1, steel);
+    trigger.position.set(0, -0.09, 0.05);
+    this.pistol.add(slide, stock, trigger);
+    // The hand's local -Y runs out of the fist along the forearm, so the slide (local +Z) is
+    // rotated onto it: +Z -> -Y means a +90 degree turn about X. Get this wrong and the pistol
+    // points back up the sleeve.
+    this.pistol.position.set(0, -0.38, 0.04);
+    this.pistol.rotation.x = Math.PI / 2;
+    this.armR.hand.add(this.pistol);
+
+    // Muzzle flash: a bright star, deliberately large so it reads at thumbnail size. No cone:
+    // an additive cone at this scale reads as a solid yellow polygon, not as light.
+    this.muzzle = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTexture('rgba(255,250,224,1)', 'rgba(255,150,40,0)'),
+      color: 0xffd88a, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+    }));
+    this.muzzle.scale.set(0.95, 0.95, 1);
+    this.muzzle.position.set(0, 0.02, 0.44);
+    this.muzzle.visible = false;
+    this.pistol.add(this.muzzle);
+    // A second, dimmer, wider star behind the first: reads as a bloom halo rather than a shape.
+    this.muzzleHalo = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTexture('rgba(255,190,110,0.55)', 'rgba(255,120,30,0)'),
+      color: 0xffb066, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+    }));
+    this.muzzleHalo.scale.set(1.7, 1.7, 1);
+    this.muzzleHalo.position.set(0, 0.02, 0.42);
+    this.muzzleHalo.visible = false;
+    this.pistol.add(this.muzzleHalo);
 
     const leg = (side) => {
       const hip = new THREE.Group();
@@ -286,6 +327,51 @@ export default class Player {
       this.armL.shoulder.rotation.x = damp(this.armL.shoulder.rotation.x, -0.35, 12, dt);
       this.armR.shoulder.rotation.x = damp(this.armR.shoulder.rotation.x, -0.25, 12, dt);
     }
+  }
+
+  /**
+   * A still lean: hip against the car, one ankle crossed, one arm on the roof, head turned. Used
+   * for the cover, where the character has to read as relaxed and as part of the car's silhouette.
+   */
+  poseLean() {
+    this.pistol.visible = false;
+    this.muzzle.visible = false;
+    this.body.position.y = -0.02;
+    this.body.rotation.z = 0.07;
+    this.torso.rotation.x = -0.03;
+    this.torso.rotation.z = -0.05;
+    this.head.rotation.y = 0.24;
+    this.head.rotation.x = 0.02;
+    this.armR.shoulder.rotation.x = -2.35;
+    this.armR.shoulder.rotation.z = -0.36;
+    this.armR.elbow.rotation.x = 0.55;
+    this.armL.shoulder.rotation.x = 0.12;
+    this.armL.shoulder.rotation.z = 0.3;
+    this.armL.elbow.rotation.x = 0.3;
+    this.legL.hip.rotation.x = -0.14;
+    this.legL.hip.rotation.z = 0.1;
+    this.legL.knee.rotation.x = 0.1;
+    this.legR.hip.rotation.x = 0.22;
+    this.legR.hip.rotation.z = -0.16;
+    this.legR.knee.rotation.x = -0.34;
+  }
+
+  /**
+   * A still firing pose: gun up and centred, left hand bracing the grip, weight forward. Used by
+   * the mission shot and by the combat system when the player is aiming.
+   */
+  poseAim(flash = true) {
+    this.pistol.visible = true;
+    this.armR.shoulder.rotation.x = -1.42;
+    this.armR.shoulder.rotation.z = -0.16;
+    this.armR.elbow.rotation.x = 0.34;
+    this.armL.shoulder.rotation.x = -1.3;
+    this.armL.shoulder.rotation.z = 0.3;
+    this.armL.elbow.rotation.x = 0.62;
+    this.torso.rotation.x = 0.06;
+    this.head.rotation.x = -0.04;
+    this.muzzle.visible = flash;
+    if (this.muzzleHalo) this.muzzleHalo.visible = flash;
   }
 
   stage(x, z, yaw, crouch = false) {

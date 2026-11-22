@@ -4,44 +4,81 @@
 import config from '../core/config.js';
 import Rng from '../core/rng.js';
 import { clamp, dampAngle, rayBox, resolveCircleBox } from '../core/math.js';
+import { buildCar as kitBuildCar } from '../entities/carkit.js';
+import { contactShadowTexture } from '../core/assets.js';
 
 const THREE = globalThis.THREE;
 
 function buildCruiser() {
   const group = new THREE.Group();
-  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xf0eee4, roughness: 0.42, metalness: 0.25 });
-  const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0x173a6d, roughness: 0.5, metalness: 0.2 });
-  const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x131c24, roughness: 0.15, metalness: 0.6 });
+  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xf2f0e6, roughness: 0.34, metalness: 0.3 });
+  const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0x16376b, roughness: 0.45, metalness: 0.25 });
+  const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x131c24, roughness: 0.1, metalness: 0.7 });
   const tyreMaterial = new THREE.MeshStandardMaterial({ color: 0x121212, roughness: 0.95 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.96, 0.62, 4.54), bodyMaterial);
-  body.position.y = 0.66;
-  body.castShadow = true;
-  body.receiveShadow = true;
-  group.add(body);
-  const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.99, 0.18, 4.56), stripeMaterial);
-  stripe.position.y = 0.72;
+  const chromeMaterial = new THREE.MeshStandardMaterial({ color: 0xcbc6b8, roughness: 0.2, metalness: 0.9 });
+
+  // Rounded shell from the shared kit, so a cruiser reads as the same car family.
+  const kit = kitBuildCar('cruiser');
+  const paint = new THREE.Mesh(kit.paint, bodyMaterial);
+  paint.castShadow = true;
+  paint.receiveShadow = true;
+  group.add(paint);
+  group.add(new THREE.Mesh(kit.trim, chromeMaterial));
+
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.02, 0.24, 2.4), stripeMaterial);
+  stripe.position.set(0, 0.72, 0.1);
+  stripe.castShadow = true;
   group.add(stripe);
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.56, 2.2), glassMaterial);
-  cabin.position.set(0, 1.2, -0.18);
-  cabin.castShadow = true;
-  group.add(cabin);
-  const wheelGeometry = new THREE.CylinderGeometry(0.34, 0.34, 0.26, 8);
+
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.42, 1.9), glassMaterial);
+  glass.position.set(0, 1.16, -0.22);
+  group.add(glass);
+
+  const pushBar = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.3, 0.14), chromeMaterial);
+  pushBar.position.set(0, 0.5, 2.28);
+  group.add(pushBar);
+
+  const wheelGeometry = new THREE.CylinderGeometry(0.35, 0.35, 0.27, 12);
   wheelGeometry.rotateZ(Math.PI / 2);
-  for (const sx of [-0.92, 0.92]) {
-    for (const sz of [-1.45, 1.45]) {
+  for (const sx of [-0.9, 0.9]) {
+    for (const sz of [-1.44, 1.44]) {
       const wheel = new THREE.Mesh(wheelGeometry, tyreMaterial);
       wheel.position.set(sx, 0.34, sz);
+      wheel.castShadow = true;
       group.add(wheel);
     }
   }
+
+  // Light bar: two lenses either side, plus a shadow-casting spine and roof fins.
   const redMaterial = new THREE.MeshBasicMaterial({ color: 0xff2a1e, toneMapped: false });
   const blueMaterial = new THREE.MeshBasicMaterial({ color: 0x2a5dff, toneMapped: false });
-  const red = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 0.95), redMaterial);
-  red.position.set(-0.45, 1.55, -0.1);
-  const blue = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.16, 0.95), blueMaterial);
-  blue.position.set(0.45, 1.55, -0.1);
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.24, 0.1, 0.24), new THREE.MeshStandardMaterial({ color: 0x1b1e22, roughness: 0.6 }));
+  bar.position.set(0, 1.4, 0.4);
+  group.add(bar);
+  const red = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.14, 0.26), redMaterial);
+  red.position.set(-0.34, 1.47, 0.4);
+  const blue = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.14, 0.26), blueMaterial);
+  blue.position.set(0.34, 1.47, 0.4);
   group.add(red, blue);
-  return { group, redMaterial, blueMaterial };
+
+  // Working spot lamps, so the bar actually throws light down the road.
+  const lamp = new THREE.SpotLight(0xbfd4ff, 0, 46, 0.5, 0.55, 1.4);
+  lamp.position.set(0, 1.5, 0.4);
+  lamp.target.position.set(0, 0, 12);
+  group.add(lamp);
+  group.add(lamp.target);
+
+  // Contact shadow, so the cruiser sits on the road rather than hovering over it.
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.1, 5.1),
+    new THREE.MeshBasicMaterial({ map: contactShadowTexture(), transparent: true, opacity: 0.86, depthWrite: false, color: 0x000000 }),
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.05;
+  shadow.renderOrder = 2;
+  group.add(shadow);
+
+  return { group, redMaterial, blueMaterial, lamp };
 }
 
 export default class Police {
@@ -427,25 +464,90 @@ export default class Police {
   updateHelicopter(dt, playerPos) {
     if (!this.helicopter) {
       const group = new THREE.Group();
-      const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x1b2733, roughness: 0.5, metalness: 0.4 });
-      const body = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 4.2), bodyMaterial);
-      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 4.4), bodyMaterial);
-      tail.position.set(0, 0.1, -4.0);
-      const rotor = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.06, 0.35), new THREE.MeshStandardMaterial({ color: 0x11181f }));
-      rotor.position.y = 0.6;
-      const tailRotor = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.05, 0.18), new THREE.MeshStandardMaterial({ color: 0x11181f }));
-      tailRotor.position.set(0, 0.15, -6.1);
-      const skid = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 3.0), new THREE.MeshStandardMaterial({ color: 0x2b333a }));
-      skid.position.set(-0.8, -0.6, 0);
-      const skid2 = skid.clone();
-      skid2.position.x = 0.8;
+      const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x1d2a36, roughness: 0.46, metalness: 0.45 });
+      const darkMaterial = new THREE.MeshStandardMaterial({ color: 0x101820, roughness: 0.7, metalness: 0.3 });
+
+      // Fuselage: a lofted pod, rounded at the nose, tapering into the tail boom.
+      const pod = new THREE.SphereGeometry(1.0, 14, 10);
+      pod.scale(1.35, 1.0, 2.3);
+      const body = new THREE.Mesh(pod, bodyMaterial);
+      body.castShadow = true;
+      const boom = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.34, 4.6, 8), bodyMaterial);
+      boom.rotation.x = Math.PI / 2;
+      boom.position.set(0, 0.16, -3.4);
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.1, 0.7), darkMaterial);
+      fin.position.set(0, 0.66, -5.5);
+      const stabiliser = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.14, 1.5), darkMaterial);
+      stabiliser.position.set(0, 0.2, -5.1);
+
+      // Glass cockpit bubble at the nose.
+      const canopy = new THREE.Mesh(
+        new THREE.SphereGeometry(0.82, 12, 9),
+        new THREE.MeshStandardMaterial({ color: 0x0d1620, roughness: 0.08, metalness: 0.8 }),
+      );
+      canopy.scale.set(1.22, 0.82, 0.72);
+      canopy.position.set(0, -0.02, 1.44);
+
+      // Main rotor: a hub and four blades, spun in the update.
+      const rotor = new THREE.Group();
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.2, 8), darkMaterial);
+      rotor.add(hub);
+      for (let i = 0; i < 4; i += 1) {
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.045, 3.7), darkMaterial);
+        blade.position.z = 1.85;
+        const holder = new THREE.Group();
+        holder.rotation.y = (i / 4) * Math.PI * 2;
+        holder.add(blade);
+        rotor.add(holder);
+      }
+      rotor.position.set(0, 0.88, 0);
+
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 0.42, 6), darkMaterial);
+      mast.position.set(0, 0.66, 0);
+
+      const tailRotor = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.5, 0.14), darkMaterial);
+      tailRotor.position.set(0.16, 0.7, -5.45);
+
+      // Skids.
+      const skidGeometry = new THREE.BoxGeometry(0.1, 0.1, 2.6);
+      const strutGeometry = new THREE.BoxGeometry(0.08, 0.5, 0.08);
+      for (const side of [-1, 1]) {
+        const skid = new THREE.Mesh(skidGeometry, darkMaterial);
+        skid.position.set(side * 0.86, -1.02, 0.1);
+        group.add(skid);
+        for (const along of [-0.7, 0.7]) {
+          const strut = new THREE.Mesh(strutGeometry, darkMaterial);
+          strut.position.set(side * 0.86, -0.78, along);
+          group.add(strut);
+        }
+      }
+
+      // Searchlight: the lamp, plus a translucent cone standing in for the beam.
       const light = new THREE.SpotLight(0xffffff, 0, 90, 0.42, 0.45, 1.2);
-      light.position.set(0, -1, 0);
+      light.position.set(0, -0.9, 0.7);
       const target = new THREE.Object3D();
-      group.add(body, tail, rotor, tailRotor, skid, skid2, light, target);
+      const beamGeometry = new THREE.ConeGeometry(4.2, 26, 18, 1, true);
+      beamGeometry.translate(0, -13, 0);
+      const beam = new THREE.Mesh(
+        beamGeometry,
+        new THREE.MeshBasicMaterial({
+          color: 0xdce8ff,
+          transparent: true,
+          opacity: 0.1,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          side: THREE.DoubleSide,
+          toneMapped: false,
+        }),
+      );
+      beam.position.set(0, -0.9, 0.7);
+      beam.rotation.x = 0.16;
+
+      group.add(body, boom, fin, stabiliser, canopy, mast, rotor, tailRotor, light, target, beam);
       light.target = target;
+      group.add(target);
       this.group.add(group);
-      this.helicopter = { group, rotor, tailRotor, light, target, angle: 0 };
+      this.helicopter = { group, rotor, tailRotor, light, target, beam, angle: 0 };
     }
     const heli = this.helicopter;
     heli.group.visible = true;
@@ -461,6 +563,16 @@ export default class Police {
     heli.light.intensity = 2.8;
     heli.target.position.set(playerPos.x, playerPos.y + 0.3, playerPos.z);
     heli.target.updateMatrixWorld();
+    // The beam leans from the lamp to the target so it always reads as a searchlight.
+    const beam = heli.beam;
+    const dx = playerPos.x - x;
+    const dy = playerPos.y - 0.3 - (y - 0.9);
+    const dz = playerPos.z - z;
+    beam.rotation.set(0, 0, 0);
+    beam.lookAt(playerPos.x, playerPos.y + 0.3, playerPos.z);
+    beam.rotateX(-Math.PI / 2);
+    const reach = Math.hypot(dx, dy, dz);
+    beam.scale.set(1, Math.max(0.4, reach / 26), 1);
   }
 
   getTargets() {
@@ -487,14 +599,20 @@ export default class Police {
     return targets;
   }
 
+  /**
+   * The chase frame: three cruisers packed behind the hero car, the middle one slewed sideways
+   * across the lane, the helicopter overhead. Poses are absolute so the shot is repeatable.
+   */
   stageChase(playerPos) {
     this.setWanted(4, true);
     this.losVisible = true;
     this.cruisers.length = 0;
+    // Absolute poses relative to the hero so the pack is always packed into the same window:
+    // one close on the left, one slewed broadside, one further back filling the lane.
     const ring = [
-      [playerPos.x + 17, playerPos.z + 8, Math.PI * 1.5],
-      [playerPos.x - 15, playerPos.z + 15, -0.4],
-      [playerPos.x + 5, playerPos.z + 30, Math.PI],
+      [playerPos.x - 3.6, playerPos.z + 8.4, Math.PI + 0.12],
+      [playerPos.x + 3.4, playerPos.z + 11.2, Math.PI - 1.18],
+      [playerPos.x - 0.6, playerPos.z + 17.4, Math.PI + 0.24],
     ];
     for (const [x, z, yaw] of ring) this.spawnCruiser(x, z, yaw);
     this.emitWanted();
@@ -502,6 +620,33 @@ export default class Police {
     for (const cruiser of this.cruisers) {
       cruiser.group.position.copy(cruiser.pos);
       cruiser.group.rotation.y = cruiser.yaw;
+      cruiser.redMaterial.color.setHex(0xff2e22);
+      cruiser.blueMaterial.color.setHex(0x2f66ff);
+      if (cruiser.lamp) cruiser.lamp.intensity = 6;
+    }
+    // Put the helicopter high and just behind the pack, silhouetted against the sky with its
+    // searchlight raking down across the road.
+    if (this.helicopter) {
+      const heli = this.helicopter;
+      const hx = playerPos.x - 7;
+      const hy = playerPos.y + 15;
+      const hz = playerPos.z + 22;
+      heli.group.position.set(hx, hy, hz);
+      heli.group.lookAt(playerPos.x, playerPos.y + 1, playerPos.z);
+      heli.rotor.rotation.y = 0.7;
+      heli.light.intensity = 9;
+      // Aim the lamp at the road just ahead of the hero so the beam lands in frame.
+      const aimX = playerPos.x + 1;
+      const aimZ = playerPos.z + 4;
+      heli.target.position.set(aimX, playerPos.y + 0.4, aimZ);
+      heli.target.updateMatrixWorld();
+      if (heli.beam) {
+        heli.beam.lookAt(aimX, playerPos.y + 0.4, aimZ);
+        heli.beam.rotateX(-Math.PI / 2);
+        const reach = Math.hypot(aimX - hx, playerPos.y + 0.4 - (hy - 0.9), aimZ - hz);
+        const s = Math.max(0.55, reach / 26);
+        heli.beam.scale.set(s * 1.15, s, s * 1.15);
+      }
     }
   }
 }

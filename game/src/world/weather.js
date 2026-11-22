@@ -4,13 +4,14 @@
 import config from '../core/config.js';
 
 export default class Weather {
-  constructor({ plan, sky, water, buildings, props, landmarks, renderer, scene }) {
+  constructor({ plan, sky, water, buildings, props, streetDetail, landmarks, gulls, renderer, scene }) {
     this.plan = plan;
     this.sky = sky;
     this.water = water;
     this.buildings = buildings;
     this.props = props;
     this.landmarks = landmarks;
+    this.gulls = gulls;
     this.renderer = renderer;
     this.scene = scene;
     this.period = 'golden';
@@ -26,6 +27,7 @@ export default class Weather {
     this.water.setPeriod(period, this.sky.sunDir);
     this.buildings.setPeriod(period);
     if (this.props) this.props.setPeriod(period);
+    if (this.streetDetail) this.streetDetail.setPeriod(period);
     if (this.landmarks) this.landmarks.setPeriod(period);
     this.clock = period === 'night' ? config.clock.startNight : config.clock.startGolden;
     this.renderer.toneMappingExposure = period === 'night' ? config.render.exposureNight : config.render.exposureGolden;
@@ -36,5 +38,7 @@ export default class Weather {
     this.elapsed += dt;
     this.sky.update(dt, focus);
     this.water.update(this.elapsed + 24);
+    if (this.landmarks?.update) this.landmarks.update(dt, this.elapsed);
+    if (this.gulls?.update) this.gulls.update(dt, this.elapsed);
   }
 }

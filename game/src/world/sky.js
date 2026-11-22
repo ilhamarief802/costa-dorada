@@ -1,6 +1,7 @@
-// Sky dome, sun, moon and the shadow rig. Two looks share one shader: a hazy golden hour and
-// a clear tropical night. The sun's shadow camera is a single tight box that follows the player,
-// so the whole city can be lit for the cost of one 2048 map.
+// Sky dome, sun, moon, distant ridges and the shadow rig. Two looks share one shader: a hazy
+// golden hour and a clear tropical night. The dome rides the camera so its far wall can never
+// be clipped by the camera's far plane (the bug that used to punch a black slab through the
+// frame), and a ring of low ridges gives the horizon real terrain instead of empty haze.
 import config from '../core/config.js';
 import { glowTexture } from '../core/assets.js';
 
@@ -61,7 +62,10 @@ const fragmentShader = `
     float sun = max(dot(dir, uSunDir), 0.0);
     float disc = smoothstep(0.99935, 0.99982, sun);
     float glow = pow(sun, 7.0) * 0.42 + pow(sun, 60.0) * 0.9 + pow(sun, 650.0) * 1.5;
-    color += uSunColor * glow * (1.0 - uNight * 0.88);
+    // A broad low-sun wash so the sky behind the skyline brightens toward the light.
+    float wash = pow(max(dot(normalize(vec3(dir.x, 0.0, dir.z)), normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0), 3.0)
+      * (1.0 - smoothstep(0.0, 0.42, height)) * 0.5;
+    color += uSunColor * (glow + wash) * (1.0 - uNight * 0.88);
     color = mix(color, uSunColor * 1.05, disc * (1.0 - uNight) * 0.8);
 
     float moon = max(dot(dir, uMoonDir), 0.0);
@@ -94,7 +98,8 @@ const fragmentShader = `
     }
 
     gl_FragColor = vec4(color, 1.0);
-    float dither = (hash(gl_FragCoord.xy * 0.71) - 0.5) / 240.0;
+    // Ordered-ish dither kills the banding a smooth two-stop gradient shows at 8 bits.
+    float dither = (hash(gl_FragCoord.xy * 0.71) - 0.5) / 180.0;
     gl_FragColor.rgb += dither;
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -102,9 +107,10 @@ const fragmentShader = `
 `;
 
 export default class Sky {
-  constructor(plan, scene) {
+  constructor(plan, scene, camera) {
     this.plan = plan;
     this.scene = scene;
+    this.camera = camera ?? null;
     this.group = new THREE.Group();
     this.group.name = 'sky';
     this.period = 'golden';
@@ -128,10 +134,14 @@ export default class Sky {
       fragmentShader,
       side: THREE.BackSide,
       depthWrite: false,
+      depthTest: false,
       fog: false,
     });
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(1200, 40, 24), material);
+    // Radius comfortably inside the 1400 m far plane and re-centred on the camera every frame.
+    this.radius = 1000;
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(this.radius, 40, 24), material);
     dome.frustumCulled = false;
+    dome.renderOrder = -100;
     this.group.add(dome);
     this.dome = dome;
 
@@ -141,12 +151,16 @@ export default class Sky {
       transparent: true,
       opacity: 0.42,
       depthWrite: false,
+      depthTest: false,
       blending: THREE.AdditiveBlending,
       toneMapped: false,
     });
     this.halo = new THREE.Sprite(this.haloMaterial);
     this.halo.scale.set(240, 240, 1);
+    this.halo.renderOrder = -99;
     this.group.add(this.halo);
+
+    this.buildRidges();
 
     this.sun = new THREE.DirectionalLight(0xffc382, 2.5);
     this.sun.castShadow = true;
@@ -181,6 +195,74 @@ export default class Sky {
     this.setPeriod('golden');
   }
 
+  /**
+   * Two concentric rings of low coastal ridges, built once, sitting inside the dome. They are
+   * real lit geometry with vertex colours and take the scene fog, so the horizon reads as hills
+   * fading into the sea haze instead of a flat gradient.
+   */
+  buildRidges() {
+    this.ridgeGroup = new THREE.Group();
+    this.ridgeGroup.name = 'ridges';
+    const counters = new THREE.Color(0x30404a);
+    const sunlit = new THREE.Color(0x8f7a63);
+    const rings = [
+      { radius: 660, height: 74, teeth: 46, base: 0.55, tint: 0.62 },
+      { radius: 900, height: 108, teeth: 34, base: 0.35, tint: 0.4 },
+    ];
+    for (const ring of rings) {
+      const positions = [];
+      const colors = [];
+      const normals = [];
+      const color = new THREE.Color();
+      const step = (Math.PI * 2) / ring.teeth;
+      for (let i = 0; i < ring.teeth; i += 1) {
+        const a0 = i * step;
+        const a1 = a0 + step;
+        // Seeded, not random: the same silhouette on every load.
+        const h0 = ring.height * (ring.base + 0.45 * (0.5 + 0.5 * Math.sin(i * 2.399 + ring.radius)));
+        const h1 = ring.height * (ring.base + 0.45 * (0.5 + 0.5 * Math.sin((i + 1) * 2.399 + ring.radius)));
+        const r = ring.radius;
+        const p = (a, h) => [Math.cos(a) * r, h, Math.sin(a) * r];
+        const left = p(a0, h0);
+        const right = p(a1, h1);
+        const lowL = p(a0, -18);
+        const lowR = p(a1, -18);
+        // Two triangles, wound so the inward face is front.
+        const tri = [left, lowL, right, right, lowL, lowR];
+        for (const v of tri) {
+          positions.push(v[0], v[1], v[2]);
+          normals.push(-Math.cos((a0 + a1) / 2), 0.18, -Math.sin((a0 + a1) / 2));
+        }
+        // Peak is warmer where the sun catches it, base sinks into the marine haze.
+        const peak = counters.clone().lerp(sunlit, ring.tint * 0.7);
+        for (let k = 0; k < 6; k += 1) {
+          color.copy(k === 0 || k === 2 || k === 5 ? peak : counters);
+          colors.push(color.r, color.g, color.b);
+        }
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+      geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geometry.computeVertexNormals();
+      const material = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 1,
+        metalness: 0,
+        flatShading: true,
+        fog: true,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.frustumCulled = false;
+      mesh.receiveShadow = false;
+      mesh.castShadow = false;
+      mesh.userData.tint = ring.tint;
+      this.ridgeGroup.add(mesh);
+    }
+    this.group.add(this.ridgeGroup);
+  }
+
   setPeriod(period) {
     this.period = period;
     const night = period === 'night';
@@ -212,13 +294,21 @@ export default class Sky {
     this.uniforms.uTime.value = 0;
     this.haloMaterial.opacity = night ? 0 : 0.42;
     this.haloMaterial.color.set(night ? 0xbcd0ff : 0xffc27a);
+    // Ridges sit a shade under the horizon colour at night and warm at golden hour.
+    for (const mesh of this.ridgeGroup.children) {
+      mesh.material.color.set(night ? 0x101a26 : 0xffffff);
+      mesh.material.emissive.set(night ? 0x0a1018 : 0x000000);
+    }
   }
 
   update(dt, focus) {
     this.focus.copy(focus);
     this.uniforms.uTime.value += dt;
-    this.dome.position.set(focus.x, 0, focus.z);
-    this.halo.position.set(focus.x + this.sunDir.x * 900, this.sunDir.y * 900, focus.z + this.sunDir.z * 900);
+    // Ride the camera: this is what keeps the dome's far wall inside the far plane.
+    if (this.camera) this.dome.position.copy(this.camera.position);
+    else this.dome.position.set(focus.x, 0, focus.z);
+    this.ridgeGroup.position.set(focus.x, 0, focus.z);
+    this.halo.position.set(focus.x + this.sunDir.x * 760, this.sunDir.y * 760, focus.z + this.sunDir.z * 760);
     const lightPosition = new THREE.Vector3().copy(this.sunDir).multiplyScalar(260).add(focus);
     this.sun.position.copy(lightPosition);
     this.sun.target.position.set(focus.x, 0, focus.z);

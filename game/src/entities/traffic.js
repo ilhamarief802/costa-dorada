@@ -1,18 +1,23 @@
-// Traffic: 36 cars on eight lane circuits. Each circuit follows the road grid in one direction
-// on the correct side of the centre line, so cars meet head-on in opposite lanes and turn at
-// the junctions as the circuit rounds a corner. Every car is four instanced meshes plus two
-// light strips and a soft blob shadow: 8 draw calls for the whole flow.
+// Traffic: cars on circuits around the lattice, plus their lamps and contact shadows. Each of
+// the four silhouettes (coupe, sedan, van, taxi) is one instanced paint mesh and one instanced
+// trim mesh, so forty-odd moving cars cost eight draw calls for the bodies and two for the
+// wheels. Cars follow each other, yield to whatever stands in their lane, and brake for
+// junctions; a stolen car leaves the flow briefly and rejoins far away.
 import config from '../core/config.js';
 import Rng from '../core/rng.js';
+import { buildCar, buildWheel } from './carkit.js';
 import { contactShadowTexture } from '../core/assets.js';
 
 const THREE = globalThis.THREE;
 
-const CAR_COLORS = [0xb8443b, 0x2f6f7a, 0xd9a441, 0x4a5a70, 0xe6dcc8, 0x2f3138, 0x7d3a4c, 0x8a9a86, 0x9b5a37, 0x3f5e75];
+const BODY_COLOURS = [
+  0xb8443b, 0x2f6f7a, 0xd9a441, 0x4a5a70, 0xe6dcc8, 0x2f3138, 0x7d3a4c,
+  0x8a9a86, 0x9c4f2a, 0x37536b, 0xc7cbd0, 0x1f3b30, 0x8c2f2f, 0x5b5f6b,
+];
 
-function buildPath(points) {
-  let total = 0;
+function makePath(points) {
   const lengths = [];
+  let total = 0;
   for (let i = 0; i < points.length; i += 1) {
     const a = points[i];
     const b = points[(i + 1) % points.length];
@@ -43,169 +48,247 @@ function sample(path, distance) {
   return { x: first[0], z: first[1], heading: 0 };
 }
 
-/** Rounded rectangle path. Clockwise paths sit lane metres inside the kerb line; reverse paths
- *  sit lane metres outside it, which puts both directions on their own right-hand side. */
-function circuit(x1, z1, x2, z2, clockwise, lane) {
-  const shrink = clockwise ? lane : -lane;
-  const minX = x1 + shrink;
-  const maxX = x2 - shrink;
-  const minZ = z1 + shrink;
-  const maxZ = z2 - shrink;
-  const c = 5.5;
-  const points = [
-    [minX + c, minZ], [maxX - c, minZ], [maxX, minZ + c],
-    [maxX, maxZ - c], [maxX - c, maxZ], [minX + c, maxZ],
-    [minX, maxZ - c], [minX, minZ + c],
-  ];
-  if (!clockwise) points.reverse();
-  return buildPath(points);
-}
+/** The street circuits: a few long loops around the grid so cars cover the whole city. */
+function buildPaths(plan) {
+  const paths = [];
+  const centres = [];
+  for (let i = 0; i < 8; i += 1) centres.push((i - 3.5) * config.pitch);
+  const lane = config.traffic.lane;
+  const half = 322;
 
-function nearestS(car, x, z) {
-  const path = car.path;
-  let best = 0;
-  let bestDist = Infinity;
-  const step = Math.max(1.5, path.total / 900);
-  for (let s = 0; s < path.total; s += step) {
-    const point = sample(path, s);
-    const d = (point.x - x) * (point.x - x) + (point.z - z) * (point.z - z);
-    if (d < bestDist) {
-      bestDist = d;
-      best = s;
+  // Four long north-south circuits, two in each direction.
+  for (const centre of centres) {
+    for (const dir of [1, -1]) {
+      const x = centre + dir * lane * 1.5;
+      paths.push(makePath([
+        [x, half], [x, -half], [-x - dir * lane * 3, -half], [-x - dir * lane * 3, half],
+      ]));
     }
   }
-  return best;
+  // Four long east-west circuits.
+  for (const centre of centres) {
+    for (const dir of [1, -1]) {
+      const z = centre + dir * lane * 1.5;
+      paths.push(makePath([
+        [-half, z], [half, z], [half, -z - dir * lane * 3], [-half, -z - dir * lane * 3],
+      ]));
+    }
+  }
+  return paths;
 }
 
 export default class Traffic {
   constructor(plan) {
     this.plan = plan;
+    this.rng = new Rng((plan.seed ^ 0x51c9a7d3) >>> 0);
     this.group = new THREE.Group();
     this.group.name = 'traffic';
-    this.rng = new Rng((plan.seed ^ 0x51ed270b) >>> 0);
-    const xs = plan.roads.x;
-    const zs = plan.roads.z;
-    const lane = config.traffic.lane;
-    // Eight loops: long avenues as well as tight downtown blocks. Alternating direction means
-    // each corridor carries traffic both ways.
-    this.paths = [
-      circuit(xs[3], zs[3], xs[5], zs[7], true, lane),
-      circuit(xs[1], zs[0], xs[4], zs[7], false, lane),
-      circuit(xs[2], zs[1], xs[6], zs[5], true, lane),
-      circuit(xs[0], zs[2], xs[3], zs[6], false, lane),
-      circuit(xs[3], zs[0], xs[7], zs[3], true, lane),
-      circuit(xs[0], zs[0], xs[2], zs[4], false, lane),
-      circuit(xs[4], zs[2], xs[7], zs[7], false, lane),
-      circuit(xs[2], zs[4], xs[6], zs[7], true, lane),
-    ];
+    this.paths = buildPaths(plan);
     this.cars = [];
+    this.dummy = new THREE.Object3D();
+    this.color = new THREE.Color();
+    this.night = false;
     this.buildCars();
-    this.buildMeshes();
-    this.setPeriod('golden');
   }
 
   buildCars() {
     const rng = this.rng;
-    const count = config.traffic.cars;
-    for (let i = 0; i < count; i += 1) {
+    const kinds = ['coupe', 'sedan', 'van', 'taxi'];
+    const kits = {};
+    for (const kind of kinds) kits[kind] = buildCar(kind);
+    this.kits = kits;
+
+    const perKind = {};
+    for (const kind of kinds) perKind[kind] = [];
+    for (let i = 0; i < config.traffic.cars; i += 1) {
       const path = this.paths[i % this.paths.length];
-      const perPath = Math.ceil(count / this.paths.length);
-      const slot = Math.floor(i / this.paths.length);
-      this.cars.push({
+      const kind = kinds[i % kinds.length];
+      const car = {
         path,
-        s: (slot / perPath) * path.total + rng.float(0, 16),
-        cruise: config.traffic.speed + rng.float(-1.4, 2.6),
-        speed: config.traffic.speed * 0.6,
+        s: rng.float(0, path.total),
+        speed: 0,
+        cruise: config.traffic.speed * rng.float(0.82, 1.18),
         heading: 0,
         x: 0,
         z: 0,
         ground: 0,
-        color: CAR_COLORS[i % CAR_COLORS.length],
-        tall: i % 7 === 0,
-        wheel: rng.float(0, 6.28),
-        braking: false,
+        wheel: 0,
         stolen: false,
         respawn: 0,
-        index: i,
+        braking: false,
+        color: BODY_COLOURS[i % BODY_COLOURS.length],
+        kind,
+        tall: kind === 'van',
+        meshIndex: perKind[kind].length,
+      };
+      perKind[kind].push(car);
+      this.cars.push(car);
+    }
+
+    // One instanced paint mesh and one instanced trim mesh per silhouette.
+    this.paintMeshes = {};
+    this.trimMeshes = {};
+    for (const kind of kinds) {
+      const list = perKind[kind];
+      const kit = kits[kind];
+      if (!list.length) continue;
+      const paintMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0xffffff, roughness: 0.3, metalness: 0.5, clearcoat: 0.8, clearcoatRoughness: 0.12,
+        envMapIntensity: 1.0,
       });
+      const paintMesh = new THREE.InstancedMesh(kit.paint, paintMaterial, list.length);
+      paintMesh.castShadow = true;
+      paintMesh.receiveShadow = true;
+      paintMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      list.forEach((car, index) => {
+        const colour = new THREE.Color(car.color);
+        paintMesh.setColorAt(index, colour);
+      });
+      if (paintMesh.instanceColor) paintMesh.instanceColor.needsUpdate = true;
+      this.group.add(paintMesh);
+      this.paintMeshes[kind] = paintMesh;
+
+      const trimMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0x1a1e23, roughness: 0.2, metalness: 0.8, clearcoat: 0.6,
+      });
+      const trimMesh = new THREE.InstancedMesh(kit.trim, trimMaterial, list.length);
+      trimMesh.castShadow = true;
+      trimMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.group.add(trimMesh);
+      this.trimMeshes[kind] = trimMesh;
+
+      // Wheels: four per car, one instanced mesh over every wheel on this silhouette.
+      const wheelGeometry = buildWheel(kit.spec.wheelRadius, 0.24);
+      const rubber = new THREE.MeshStandardMaterial({ color: 0x0e0f12, roughness: 0.96 });
+      const wheels = new THREE.InstancedMesh(wheelGeometry, rubber, list.length * 4);
+      wheels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.group.add(wheels);
+      this[`wheels_${kind}`] = wheels;
     }
-  }
 
-  buildMeshes() {
-    const total = this.cars.length;
-    const bodyGeometry = new THREE.BoxGeometry(1.84, 0.56, 4.3);
-    bodyGeometry.translate(0, 0.58, 0);
-    const cabinGeometry = new THREE.BoxGeometry(1.58, 0.5, 2.0);
-    cabinGeometry.translate(0, 1.06, -0.15);
-    const wheelGeometry = new THREE.CylinderGeometry(0.32, 0.32, 0.24, 8);
-    wheelGeometry.rotateZ(Math.PI / 2);
-    const lampGeometry = new THREE.BoxGeometry(0.34, 0.15, 0.07);
-    const bodyMaterial = new THREE.MeshStandardMaterial({ roughness: 0.34, metalness: 0.45 });
-    const cabinMaterial = new THREE.MeshStandardMaterial({ color: 0x182026, roughness: 0.12, metalness: 0.7 });
-    const tyreMaterial = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.95 });
-    this.headMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
-    this.tailMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
-    this.bodies = new THREE.InstancedMesh(bodyGeometry, bodyMaterial, total);
-    this.cabins = new THREE.InstancedMesh(cabinGeometry, cabinMaterial, total);
-    this.wheels = new THREE.InstancedMesh(wheelGeometry, tyreMaterial, total * 4);
-    this.heads = new THREE.InstancedMesh(lampGeometry, this.headMaterial, total * 2);
-    this.tails = new THREE.InstancedMesh(lampGeometry, this.tailMaterial, total * 2);
+    // Lamps: emissive head and tail cards, one instanced mesh for each across all cars.
+    const headGeometry = new THREE.BoxGeometry(0.34, 0.1, 0.05);
+    const tailGeometry = new THREE.BoxGeometry(0.34, 0.09, 0.05);
+    this.heads = new THREE.InstancedMesh(
+      headGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xfff0cc, toneMapped: false }),
+      this.cars.length * 2,
+    );
+    this.tails = new THREE.InstancedMesh(
+      tailGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xff3a20, toneMapped: false }),
+      this.cars.length * 2,
+    );
+    this.heads.frustumCulled = false;
+    this.tails.frustumCulled = false;
+    this.heads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.tails.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.group.add(this.heads);
+    this.group.add(this.tails);
 
-    const shadowGeometry = new THREE.PlaneGeometry(2.9, 5.1);
+    // Contact shadows: one instanced sheet under every car, sized per silhouette.
+    const shadowGeometry = new THREE.PlaneGeometry(1, 1);
     shadowGeometry.rotateX(-Math.PI / 2);
-    const shadowMaterial = new THREE.MeshBasicMaterial({
-      map: contactShadowTexture(),
-      transparent: true,
-      opacity: 0.46,
-      depthWrite: false,
-    });
-    this.shadows = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, total);
-
-    const color = new THREE.Color();
-    this.cars.forEach((car, index) => {
-      color.setHex(car.color);
-      this.bodies.setColorAt(index, color);
-    });
-    if (this.bodies.instanceColor) this.bodies.instanceColor.needsUpdate = true;
-    for (const mesh of [this.bodies, this.cabins, this.wheels, this.heads, this.tails]) {
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.frustumCulled = false;
-      this.group.add(mesh);
-    }
-    this.shadows.receiveShadow = false;
+    this.shadows = new THREE.InstancedMesh(
+      shadowGeometry,
+      new THREE.MeshBasicMaterial({
+        map: contactShadowTexture(), transparent: true, opacity: 0.72, depthWrite: false, color: 0x000000,
+      }),
+      this.cars.length,
+    );
     this.shadows.frustumCulled = false;
-    this.shadows.renderOrder = 1;
+    this.shadows.renderOrder = 2;
+    this.shadows.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.group.add(this.shadows);
-    this.dummy = new THREE.Object3D();
-    this.lightDummy = new THREE.Object3D();
-    this.color = new THREE.Color();
   }
 
   setPeriod(period) {
     this.night = period === 'night';
-    const head = this.night ? 0xffe4b0 : 0x6d6250;
-    const tail = this.night ? 0x9e2118 : 0x5a1916;
-    for (let i = 0; i < this.cars.length; i += 1) {
-      this.heads.setColorAt(i * 2, this.color.setHex(head));
-      this.heads.setColorAt(i * 2 + 1, this.color.setHex(head));
-      this.tails.setColorAt(i * 2, this.color.setHex(tail));
-      this.tails.setColorAt(i * 2 + 1, this.color.setHex(tail));
-    }
-    if (this.heads.instanceColor) this.heads.instanceColor.needsUpdate = true;
-    if (this.tails.instanceColor) this.tails.instanceColor.needsUpdate = true;
+    this.heads.material.color.setHex(this.night ? 0xfff6e2 : 0xfff0cc);
   }
 
-  /** Place a few cars on the south avenue for the cover frame (and the title backdrop). */
+  /**
+   * Pin traffic to explicit poses for a shot. Each entry is {x, z, heading, kind?, colour?}.
+   * Pinned cars leave the circuit simulation entirely, so the frame is exactly what was asked
+   * for; `releasePins` puts them back on their paths.
+   */
+  placeLine(entries) {
+    this.releasePins();
+    let cursor = 0;
+    for (const entry of entries) {
+      // Find the next free car of the requested silhouette, else any free car.
+      let car = null;
+      for (let i = 0; i < this.cars.length; i += 1) {
+        const candidate = this.cars[(cursor + i) % this.cars.length];
+        if (candidate.pinned || candidate.stolen) continue;
+        if (entry.kind && candidate.kind !== entry.kind) continue;
+        car = candidate;
+        cursor = (cursor + i + 1) % this.cars.length;
+        break;
+      }
+      if (!car) break;
+      car.pinned = true;
+      car.x = entry.x;
+      car.z = entry.z;
+      car.heading = entry.heading ?? 0;
+      car.ground = this.plan.heightAt(car.x, car.z);
+      car.speed = entry.speed ?? 0;
+      car.braking = Boolean(entry.braking);
+      if (entry.colour !== undefined) {
+        car.color = entry.colour;
+        const mesh = this.paintMeshes[car.kind];
+        if (mesh && car.meshIndex !== undefined) {
+          this.color.setHex(entry.colour);
+          mesh.setColorAt(car.meshIndex, this.color);
+          if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        }
+      }
+    }
+    this.update(0, {});
+  }
+
+  releasePins() {
+    for (const car of this.cars) {
+      if (!car.pinned) continue;
+      car.pinned = false;
+      car.s = this.nearestS(car, car.x, car.z);
+    }
+    for (const car of this.cars) car.hidden = false;
+  }
+
+  /**
+   * For a still frame: park every car that was not explicitly placed far below the world, so
+   * nothing drives through the staged line between the staging and the render.
+   */
+  hideUnpinned() {
+    for (const car of this.cars) car.hidden = !car.pinned;
+  }
+
+  nearestS(car, x, z) {
+    let best = 0;
+    let bestDistance = Infinity;
+    const step = 6;
+    for (let s = 0; s < car.path.total; s += step) {
+      const point = sample(car.path, s);
+      const distance = Math.hypot(point.x - x, point.z - z);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = s;
+      }
+    }
+    return best;
+  }
+
+  /** Place selected cars on a chosen stretch of road, stopped, for the cover shot. */
   stageCover() {
     const placements = [
       [0, 22, 325.85], [8, 34, 325.85], [16, 44, 325.85],
-      [1, 30, 332.15], [9, 42, 332.15], [6, 44, 312],
+      [1, 30, 332.15], [9, 42, 332.15], [6, 44, 312], [2, 33, 318], [10, 40, 318],
     ];
     for (const [index, x, z] of placements) {
       const car = this.cars[index];
       if (!car) continue;
-      car.s = nearestS(car, x, z);
+      car.s = this.nearestS(car, x, z);
       car.speed = 0;
     }
     this.update(0, {});
@@ -236,25 +319,27 @@ export default class Traffic {
     const cars = this.cars;
     const playerPos = ctx.playerPos;
     const stopRange = config.traffic.stopRange;
+    const hide = (index) => {
+      this.dummy.position.set(0, -40, 0);
+      this.dummy.scale.set(0.001, 0.001, 0.001);
+      this.dummy.updateMatrix();
+      this.shadows.setMatrixAt(index, this.dummy.matrix);
+      this.heads.setMatrixAt(index * 2, this.dummy.matrix);
+      this.heads.setMatrixAt(index * 2 + 1, this.dummy.matrix);
+      this.tails.setMatrixAt(index * 2, this.dummy.matrix);
+      this.tails.setMatrixAt(index * 2 + 1, this.dummy.matrix);
+    };
+
     for (let i = 0; i < cars.length; i += 1) {
       const car = cars[i];
+      if (car.pinned) continue;
       if (car.stolen) {
         car.respawn -= dt;
         if (car.respawn <= 0) {
           car.stolen = false;
           car.s = (car.s + car.path.total * 0.5) % car.path.total;
         }
-        this.dummy.position.set(0, -40, 0);
-        this.dummy.scale.set(0.001, 0.001, 0.001);
-        this.dummy.updateMatrix();
-        this.bodies.setMatrixAt(i, this.dummy.matrix);
-        this.cabins.setMatrixAt(i, this.dummy.matrix);
-        this.shadows.setMatrixAt(i, this.dummy.matrix);
-        for (let w = 0; w < 4; w += 1) this.wheels.setMatrixAt(i * 4 + w, this.dummy.matrix);
-        this.heads.setMatrixAt(i * 2, this.dummy.matrix);
-        this.heads.setMatrixAt(i * 2 + 1, this.dummy.matrix);
-        this.tails.setMatrixAt(i * 2, this.dummy.matrix);
-        this.tails.setMatrixAt(i * 2 + 1, this.dummy.matrix);
+        hide(i);
         continue;
       }
 
@@ -303,51 +388,112 @@ export default class Traffic {
       car.heading = point.heading;
       car.ground = this.plan.heightAt(car.x, car.z);
       car.wheel += (car.speed / 0.32) * dt;
+    }
 
-      const dummy = this.dummy;
-      dummy.position.set(car.x, car.ground, car.z);
-      dummy.rotation.set(0, car.heading, 0);
-      dummy.scale.set(1, car.tall ? 1.12 : 1, 1);
-      dummy.updateMatrix();
-      this.bodies.setMatrixAt(i, dummy.matrix);
-      this.cabins.setMatrixAt(i, dummy.matrix);
-      this.shadows.setMatrixAt(i, dummy.matrix);
-
-      for (let w = 0; w < 4; w += 1) {
-        const lx = w % 2 === 0 ? -0.84 : 0.84;
-        const lz = w < 2 ? 1.4 : -1.4;
-        const rx = lx * Math.cos(car.heading) + lz * Math.sin(car.heading);
-        const rz = -lx * Math.sin(car.heading) + lz * Math.cos(car.heading);
-        dummy.position.set(car.x + rx, car.ground + 0.32 * (car.tall ? 1.12 : 1), car.z + rz);
-        dummy.rotation.set(car.wheel, car.heading, 0);
+    // Push poses into the instanced buffers.
+    const subgroups = { coupe: [], sedan: [], van: [], taxi: [] };
+    for (const car of cars) subgroups[car.kind].push(car);
+    for (const kind of Object.keys(subgroups)) {
+      const list = subgroups[kind];
+      const paintMesh = this.paintMeshes[kind];
+      const trimMesh = this.trimMeshes[kind];
+      const wheels = this[`wheels_${kind}`];
+      if (!paintMesh) continue;
+      for (let n = 0; n < list.length; n += 1) {
+        const car = list[n];
+        if (car.stolen || car.hidden) {
+          this.dummy.position.set(0, -40, 0);
+          this.dummy.rotation.set(0, 0, 0);
+          this.dummy.scale.set(0.001, 0.001, 0.001);
+          this.dummy.updateMatrix();
+          paintMesh.setMatrixAt(n, this.dummy.matrix);
+          trimMesh.setMatrixAt(n, this.dummy.matrix);
+          for (let w = 0; w < 4; w += 1) wheels.setMatrixAt(n * 4 + w, this.dummy.matrix);
+          continue;
+        }
+        const dummy = this.dummy;
+        dummy.position.set(car.x, car.ground, car.z);
+        dummy.rotation.set(0, car.heading, 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
-        this.wheels.setMatrixAt(i * 4 + w, dummy.matrix);
-      }
+        paintMesh.setMatrixAt(n, dummy.matrix);
+        trimMesh.setMatrixAt(n, dummy.matrix);
 
+        const kit = this.kits[kind];
+        for (let w = 0; w < 4; w += 1) {
+          const station = kit.wheels[w < 2 ? 0 : 1];
+          const side = w % 2 === 0 ? -1 : 1;
+          // The car sits at ground level; the wheel's own local offset carries the hub height.
+          // Adding wheelRadius here as well would lift the wheels clear of the arches.
+          dummy.position.set(car.x, car.ground, car.z);
+          dummy.rotation.set(0, car.heading, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          const offset = new THREE.Matrix4().makeTranslation(
+            side * station.x,
+            kit.spec.wheelRadius,
+            station.z,
+          );
+          const spin = new THREE.Matrix4().makeRotationX(-car.wheel);
+          const local = new THREE.Matrix4().multiplyMatrices(offset, spin);
+          const world = new THREE.Matrix4().multiplyMatrices(dummy.matrix, local);
+          wheels.setMatrixAt(n * 4 + w, world);
+        }
+      }
+      paintMesh.instanceMatrix.needsUpdate = true;
+      trimMesh.instanceMatrix.needsUpdate = true;
+      wheels.instanceMatrix.needsUpdate = true;
+    }
+
+    // Lamps and shadows for every car, in the flat arrays.
+    const dummy = this.dummy;
+    for (let i = 0; i < cars.length; i += 1) {
+      const car = cars[i];
+      if (car.stolen || car.hidden) {
+        this.dummy.position.set(0, -40, 0);
+        this.dummy.rotation.set(0, 0, 0);
+        this.dummy.scale.set(0.001, 0.001, 0.001);
+        this.dummy.updateMatrix();
+        this.shadows.setMatrixAt(i, this.dummy.matrix);
+        this.heads.setMatrixAt(i * 2, this.dummy.matrix);
+        this.heads.setMatrixAt(i * 2 + 1, this.dummy.matrix);
+        this.tails.setMatrixAt(i * 2, this.dummy.matrix);
+        this.tails.setMatrixAt(i * 2 + 1, this.dummy.matrix);
+        continue;
+      }
+      const kit = this.kits[car.kind];
+      const cos = Math.cos(car.heading);
+      const sin = Math.sin(car.heading);
       const placeLamp = (mesh, slot, lx, lz, y) => {
-        const rx = lx * Math.cos(car.heading) + lz * Math.sin(car.heading);
-        const rz = -lx * Math.sin(car.heading) + lz * Math.cos(car.heading);
-        dummy.position.set(car.x + rx, car.ground + y + (car.tall ? 0.07 : 0), car.z + rz);
+        const rx = lx * cos + lz * sin;
+        const rz = -lx * sin + lz * cos;
+        dummy.position.set(car.x + rx, car.ground + y, car.z + rz);
         dummy.rotation.set(0, car.heading, 0);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
         mesh.setMatrixAt(slot, dummy.matrix);
       };
-      placeLamp(this.heads, i * 2, -0.63, 2.16, 0.62);
-      placeLamp(this.heads, i * 2 + 1, 0.63, 2.16, 0.62);
-      placeLamp(this.tails, i * 2, -0.66, -2.16, 0.66);
-      placeLamp(this.tails, i * 2 + 1, 0.66, -2.16, 0.66);
+      const lampY = kit.spec.lampY + 0.08;
+      placeLamp(this.heads, i * 2, -0.62, kit.spec.nose - 0.02, lampY);
+      placeLamp(this.heads, i * 2 + 1, 0.62, kit.spec.nose - 0.02, lampY);
+      placeLamp(this.tails, i * 2, -0.6, kit.spec.tail + 0.02, lampY + 0.06);
+      placeLamp(this.tails, i * 2 + 1, 0.6, kit.spec.tail + 0.02, lampY + 0.06);
 
-      const brakeGlow = car.braking ? 1 : 0.34;
-      const r = this.night ? 0.85 : 0.42;
-      this.color.setRGB(r * brakeGlow + 0.1, 0.06 * brakeGlow, 0.045 * brakeGlow);
+      // Shadow: body-length blob on the road.
+      const length = Math.abs(kit.spec.nose - kit.spec.tail) + 1.1;
+      dummy.position.set(car.x, car.ground + 0.042, car.z);
+      dummy.rotation.set(0, car.heading, 0);
+      dummy.scale.set(2.6, 1, length);
+      dummy.updateMatrix();
+      this.shadows.setMatrixAt(i, dummy.matrix);
+
+      const brakeGlow = car.braking ? 1 : 0.5;
+      const r = this.night ? 0.9 : 0.5 * brakeGlow;
+      this.color.setRGB(r + 0.12, 0.05 * brakeGlow, 0.04 * brakeGlow);
       this.tails.setColorAt(i * 2, this.color);
       this.tails.setColorAt(i * 2 + 1, this.color);
     }
-    this.bodies.instanceMatrix.needsUpdate = true;
-    this.cabins.instanceMatrix.needsUpdate = true;
-    this.wheels.instanceMatrix.needsUpdate = true;
+
     this.heads.instanceMatrix.needsUpdate = true;
     this.tails.instanceMatrix.needsUpdate = true;
     this.shadows.instanceMatrix.needsUpdate = true;

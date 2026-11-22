@@ -23,7 +23,7 @@ const config = {
     height: 720,
     fov: 56,
     near: 0.28,
-    far: 1400,
+    far: 1600,
     exposureGolden: 1.0,
     exposureNight: 0.94,
     shadowMap: 2048,
@@ -76,10 +76,11 @@ const config = {
     drag: 0.42,
     radius: 1.15,
     suspension: 0.06,
+    gravity: 25,
   },
 
-  traffic: { cars: 36, speed: 10.5, viaductCars: 3, lane: 3.15, gap: 7.4, stopRange: 8.5 },
-  pedestrians: { walkers: 70, crossing: 12, seats: 8, leaners: 6 },
+  traffic: { cars: 44, speed: 10.5, viaductCars: 3, lane: 3.15, gap: 7.4, stopRange: 8.5 },
+  pedestrians: { walkers: 96, crossing: 14, seats: 10, leaners: 8 },
 
   police: {
     speed: 23,

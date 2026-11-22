@@ -1,7 +1,8 @@
-// Pedestrians: 70 people on the block perimeters and zebra crossings. Six instanced parts per
-// person (torso, head, hair, two arms, two legs) plus one instanced blob shadow, so the whole
-// crowd is seven draw calls. Walkers swing opposite limbs, some sit on benches or lean in a
-// doorway, and gunfire sends everyone within earshot sprinting away from the noise.
+// Pedestrians: almost a hundred people on the block perimeters and zebra crossings. Seven
+// instanced parts per person (jacket, hips, head, hair, two arms, two legs) plus one instanced
+// blob shadow, so the whole crowd costs nine draw calls. Walkers swing opposite limbs from the
+// hip and shoulder, some sit on benches or lean in a doorway, and gunfire sends everyone within
+// earshot sprinting away from the noise.
 import config from '../core/config.js';
 import Rng from '../core/rng.js';
 import { contactShadowTexture } from '../core/assets.js';
@@ -9,10 +10,13 @@ import { resolveCircleBox } from '../core/math.js';
 
 const THREE = globalThis.THREE;
 
-const SHIRTS = [0xe8e0cf, 0xc75b4a, 0x3f6f86, 0xd8a95a, 0x5b7d58, 0x8b5a7a, 0xe2b7a0, 0x384b5e, 0xb04b62, 0xcfc3a4, 0x6f8f96, 0xd97b4a];
+const SHIRTS = [
+  0xe8e0cf, 0xc75b4a, 0x3f6f86, 0xd8a95a, 0x5b7d58, 0x8b5a7a, 0xe2b7a0,
+  0x384b5e, 0xb04b62, 0xcfc3a4, 0x6f8f96, 0xd97b4a, 0xf0d14e, 0x2f5a44,
+];
 const SKINS = [0xe8b98f, 0xc98d62, 0x9d6644, 0x6f4530, 0xf0c9a4, 0xb8794f];
-const TROUSERS = [0x2f3540, 0x4a4f57, 0x7c6b53, 0x2b3a4a, 0x5a4a3e, 0x27302f];
-const HAIRS = [0x2a1c14, 0x4a3220, 0x171717, 0x6b4a2a, 0x9a8d7a];
+const TROUSERS = [0x2f3540, 0x4a4f57, 0x7c6b53, 0x2b3a4a, 0x5a4a3e, 0x27302f, 0xd8d2c4];
+const HAIRS = [0x2a1c14, 0x4a3220, 0x171717, 0x6b4a2a, 0x9a8d7a, 0xc9a66b];
 
 function blockPath(block, radius) {
   const c = 4;
@@ -57,6 +61,42 @@ function samplePath(path, distance) {
   return { x: first[0], z: first[1], heading: 0 };
 }
 
+// Part geometries, built once and shared by the whole crowd. Figures face +Z.
+const G = {
+  // Jacket: tapered torso with shoulders wider than the waist.
+  torso: (() => {
+    const geometry = new THREE.BoxGeometry(0.46, 0.62, 0.27, 1, 2, 1);
+    const position = geometry.attributes.position;
+    for (let i = 0; i < position.count; i += 1) {
+      const y = position.getY(i);
+      if (y > 0.1) position.setX(i, position.getX(i) * 1.12);
+      if (y < -0.1) position.setX(i, position.getX(i) * 0.9);
+    }
+    geometry.computeVertexNormals();
+    return geometry;
+  })(),
+  hips: new THREE.BoxGeometry(0.36, 0.24, 0.24),
+  head: new THREE.SphereGeometry(0.115, 10, 8),
+  hair: (() => {
+    const geometry = new THREE.SphereGeometry(0.125, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62);
+    geometry.translate(0, 0.022, -0.006);
+    return geometry;
+  })(),
+  arm: new THREE.BoxGeometry(0.105, 0.44, 0.11),
+  // Legs run from the hip socket at 0.78 down to a sole at 0.0, so feet touch the pavement.
+  leg: (() => {
+    const geometry = new THREE.BoxGeometry(0.135, 0.78, 0.15);
+    geometry.translate(0, -0.39, 0);
+    return geometry;
+  })(),
+  // A shoe box at the ankle, so a foot reads against the paving.
+  shoe: new THREE.BoxGeometry(0.15, 0.09, 0.24),
+};
+
+function ring(count, extra) {
+  return { count, extra };
+}
+
 export default class Pedestrians {
   constructor(plan) {
     this.plan = plan;
@@ -64,8 +104,7 @@ export default class Pedestrians {
     this.group.name = 'pedestrians';
     this.rng = new Rng((plan.seed ^ 0x2f7b1a3d) >>> 0);
     this.peds = [];
-    this.tmp = new THREE.Object3D();
-    this.root = new THREE.Object3D();
+    this.dummy = new THREE.Object3D();
     this.buildCrowd();
     this.buildMeshes();
   }
@@ -85,9 +124,9 @@ export default class Pedestrians {
         skin: rng.pick(SKINS),
         trousers: rng.pick(TROUSERS),
         hair: rng.pick(HAIRS),
-        scale: rng.float(0.9, 1.06),
+        scale: rng.float(0.92, 1.08),
         phase: rng.float(0, Math.PI * 2),
-        stride: rng.float(1.15, 1.55),
+        stride: rng.float(1.0, 1.35),
         speed: rng.float(1.15, 1.62),
         x: 0,
         z: 0,
@@ -99,12 +138,13 @@ export default class Pedestrians {
         dead: false,
         deadT: 0,
         deathDir: 1,
-        override: null,
         pause: 0,
         t: 0,
         dir: 1,
         sit: 0,
         lean: 0,
+        pinned: false,
+        strideScale: 1,
       };
       if (kind === 'walk') {
         ped.path = blockPath(rng.pick(blocks), 34.3);
@@ -160,275 +200,376 @@ export default class Pedestrians {
     for (let i = 0; i < crossCount; i += 1) addPed('cross');
     for (let i = 0; i < seatCount; i += 1) addPed('sit');
     for (let i = 0; i < leanCount; i += 1) addPed('lean');
-    this.updatePositions(0);
   }
 
   buildMeshes() {
     const total = this.peds.length;
-    const torsoGeometry = new THREE.BoxGeometry(0.5, 0.62, 0.29);
-    torsoGeometry.translate(0, 1.12, 0);
-    const headGeometry = new THREE.BoxGeometry(0.25, 0.27, 0.25);
-    headGeometry.translate(0, 1.57, 0);
-    const hairGeometry = new THREE.BoxGeometry(0.27, 0.1, 0.27);
-    hairGeometry.translate(0, 1.72, 0);
-    const armGeometry = new THREE.BoxGeometry(0.12, 0.56, 0.13);
-    armGeometry.translate(0, -0.27, 0);
-    const legGeometry = new THREE.BoxGeometry(0.17, 0.8, 0.19);
-    legGeometry.translate(0, -0.38, 0);
-    const material = new THREE.MeshStandardMaterial({ roughness: 0.86, metalness: 0.02 });
-    const skinMaterial = new THREE.MeshStandardMaterial({ roughness: 0.8 });
-    const hairMaterial = new THREE.MeshStandardMaterial({ roughness: 0.95 });
-    this.torsos = new THREE.InstancedMesh(torsoGeometry, material.clone(), total);
-    this.heads = new THREE.InstancedMesh(headGeometry, skinMaterial, total);
-    this.hairs = new THREE.InstancedMesh(hairGeometry, hairMaterial, total);
-    this.arms = new THREE.InstancedMesh(armGeometry, material.clone(), total * 2);
-    this.legs = new THREE.InstancedMesh(legGeometry, material.clone(), total * 2);
-    const shadowGeometry = new THREE.PlaneGeometry(1.35, 1.35);
-    shadowGeometry.rotateX(-Math.PI / 2);
-    const shadowMaterial = new THREE.MeshBasicMaterial({
-      map: contactShadowTexture(), transparent: true, opacity: 0.38, depthWrite: false,
-    });
-    this.shadows = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, total);
-
+    const skinMaterial = new THREE.MeshStandardMaterial({ roughness: 0.82, metalness: 0 });
+    const hairMaterial = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
+    const clothMaterial = new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0 });
+    const trouserMaterial = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0 });
+    const shoeMaterial = new THREE.MeshStandardMaterial({ color: 0x24262a, roughness: 0.78, metalness: 0.04 });
+    const dummy = new THREE.Object3D();
     const color = new THREE.Color();
+
+    const make = (geometry, material, count) => {
+      const mesh = new THREE.InstancedMesh(geometry, material, count);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = false;
+      this.group.add(mesh);
+      return mesh;
+    };
+
+    this.torsos = make(G.torso, clothMaterial, total);
+    this.hips = make(G.hips, trouserMaterial, total);
+    this.heads = make(G.head, skinMaterial, total);
+    this.hairs = make(G.hair, hairMaterial, total);
+    this.arms = make(G.arm, clothMaterial, total * 2);
+    this.legs = make(G.leg, trouserMaterial, total * 2);
+    this.shoes = make(G.shoe, shoeMaterial, total * 2);
+
+    const shadowGeometry = new THREE.PlaneGeometry(1.1, 1.1);
+    shadowGeometry.rotateX(-Math.PI / 2);
+    this.shadows = make(
+      shadowGeometry,
+      new THREE.MeshBasicMaterial({
+        map: contactShadowTexture(), transparent: true, opacity: 0.62, depthWrite: false, color: 0x000000,
+      }),
+      total,
+    );
+    this.shadows.renderOrder = 2;
+
+    // Per-instance colours, set once.
     this.peds.forEach((ped, i) => {
       this.torsos.setColorAt(i, color.setHex(ped.shirt));
-      this.heads.setColorAt(i, color.setHex(ped.skin));
-      this.hairs.setColorAt(i, color.setHex(ped.hair));
-      this.arms.setColorAt(i * 2, color.setHex(ped.shirt));
-      this.arms.setColorAt(i * 2 + 1, color.setHex(ped.shirt));
+      this.hips.setColorAt(i, color.setHex(ped.trousers));
       this.legs.setColorAt(i * 2, color.setHex(ped.trousers));
       this.legs.setColorAt(i * 2 + 1, color.setHex(ped.trousers));
+      this.arms.setColorAt(i * 2, color.setHex(ped.shirt));
+      this.arms.setColorAt(i * 2 + 1, color.setHex(ped.shirt));
+      this.heads.setColorAt(i, color.setHex(ped.skin));
+      this.hairs.setColorAt(i, color.setHex(ped.hair));
     });
-    for (const mesh of [this.torsos, this.heads, this.hairs, this.arms, this.legs]) {
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.frustumCulled = false;
+    for (const mesh of [this.torsos, this.hips, this.heads, this.hairs, this.arms, this.legs, this.shoes]) {
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      this.group.add(mesh);
-    }
-    this.shadows.frustumCulled = false;
-    this.shadows.renderOrder = 1;
-    this.group.add(this.shadows);
-  }
-
-  /** Freeze a few people on the promenade so the cover frame is never an empty street. */
-  stageCover() {
-    const spots = [
-      [30, 338.4, Math.PI], [36, 337.8, -Math.PI / 2], [24, 338.8, 2.4],
-      [42, 337.4, 1.1], [27, 317.8, 1.57], [35, 317.4, -1.2],
-      [45, 318.2, 2.0], [33, 320.2, 0.2],
-    ];
-    for (let i = 0; i < spots.length; i += 1) {
-      const ped = this.peds[i];
-      if (!ped) continue;
-      ped.override = { x: spots[i][0], z: spots[i][1], yaw: spots[i][2] };
-      ped.panic = 0;
-    }
-    this.updatePositions(0);
-  }
-
-  updatePositions(dt) {
-    for (const ped of this.peds) {
-      if (ped.dead) continue;
-      if (ped.override) {
-        ped.x = ped.override.x;
-        ped.z = ped.override.z;
-        ped.yaw = ped.override.yaw;
-        ped.ground = this.plan.heightAt(ped.x, ped.z);
-        this.pushOutOfBuildings(ped);
-        continue;
-      }
-      if (ped.panic > 0) {
-        ped.x += ped.panicX * ped.speed * 2.2 * dt;
-        ped.z += ped.panicZ * ped.speed * 2.2 * dt;
-        ped.yaw = Math.atan2(ped.panicX, ped.panicZ);
-        this.pushOutOfBuildings(ped);
-        continue;
-      }
-      if (ped.kind === 'walk') {
-        ped.t += ped.speed * dt * ped.dir;
-        const point = samplePath(ped.path, ped.t);
-        ped.x = point.x;
-        ped.z = point.z;
-        ped.yaw = point.heading + (ped.dir > 0 ? 0 : Math.PI);
-        ped.ground = this.plan.heightAt(ped.x, ped.z);
-      } else if (ped.kind === 'cross') {
-        if (ped.pause > 0) {
-          ped.pause -= dt;
-        } else {
-          ped.t += (ped.speed * dt * ped.dir) / 23;
-          if (ped.t > 1) { ped.t = 1; ped.dir = -1; ped.pause = 2.2; }
-          if (ped.t < 0) { ped.t = 0; ped.dir = 1; ped.pause = 2.4; }
-        }
-        ped.x = ped.ax + (ped.bx - ped.ax) * ped.t;
-        ped.z = ped.az + (ped.bz - ped.az) * ped.t;
-        ped.yaw = Math.atan2((ped.bx - ped.ax) * ped.dir, (ped.bz - ped.az) * ped.dir);
-        ped.ground = this.plan.heightAt(ped.x, ped.z);
-      } else if (ped.kind === 'lean') {
-        ped.yaw = ped.baseYaw + Math.sin(ped.phase + ped.t * 0.35) * 0.06;
-      }
-      this.pushOutOfBuildings(ped);
-    }
-  }
-
-  /** Keep every body on the pavement: a footprint that reaches the kerb pushes them clear. */
-  pushOutOfBuildings(ped) {
-    for (let pass = 0; pass < 2; pass += 1) {
-      let moved = false;
-      const boxes = this.plan.queryColliders(ped.x, ped.z, 0.8, []);
-      for (const box of boxes) {
-        if (box.kind !== 'building') continue;
-        const resolved = resolveCircleBox(ped.x, ped.z, 0.38, box);
-        if (resolved) {
-          ped.x = resolved.x;
-          ped.z = resolved.z;
-          moved = true;
-        }
-      }
-      if (!moved) break;
-    }
-    ped.ground = this.plan.heightAt(ped.x, ped.z);
-  }
-
-  update(dt, ctx = {}) {
-    for (const ped of this.peds) {
-      if (ped.panic > 0) ped.panic = Math.max(0, ped.panic - dt);
-      if (ped.dead) {
-        ped.deadT += dt;
-        if (ped.deadT > 18) {
-          ped.dead = false;
-          ped.deadT = 0;
-          ped.panic = 0;
-          if (ped.kind === 'walk') ped.t = 0;
-        }
-      }
-      ped.phase += dt * (ped.panic > 0 ? 11.5 : ped.kind === 'walk' || ped.kind === 'cross' ? 6.2 : 0.9);
-    }
-    this.updatePositions(dt);
-    this.writeMatrices();
-    void ctx;
-  }
-
-  writeMatrices() {
-    const dummy = this.root;
-    const part = this.tmp;
-    const trans = new THREE.Matrix4();
-    const rot = new THREE.Matrix4();
-    const final = new THREE.Matrix4();
-    const headMatrix = new THREE.Matrix4();
-    const hairMatrix = new THREE.Matrix4();
-    const shadow = new THREE.Matrix4();
-    const euler = new THREE.Euler();
-    for (let i = 0; i < this.peds.length; i += 1) {
-      const ped = this.peds[i];
-      const gait = ped.panic > 0 ? 1.05 : 0.55;
-      const swing = Math.sin(ped.phase) * gait;
-      const bob = Math.abs(Math.cos(ped.phase)) * 0.035 * (ped.panic > 0 ? 1.6 : 1);
-      const fallen = ped.dead ? Math.min(1, ped.deadT / 0.45) : 0;
-      const fall = fallen * (Math.PI / 2) * ped.deathDir;
-      const ground = ped.ground;
-      const sit = ped.sit;
-      dummy.position.set(ped.x, ground + (ped.dead ? -0.72 * fallen : 0), ped.z);
-      dummy.rotation.set(0, ped.yaw, fall);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      const bodyY = -bob - sit * 0.3;
-      part.position.set(0, bodyY, 0);
-      part.rotation.set(sit * -0.06, 0, 0);
-      part.scale.set(ped.scale, ped.scale, ped.scale);
-      part.updateMatrix();
-      const base = part.matrix;
-      this.torsos.setMatrixAt(i, base);
-      trans.makeTranslation(0, 1.57, 0);
-      headMatrix.multiplyMatrices(base, trans);
-      trans.makeTranslation(0, 1.72, 0);
-      hairMatrix.multiplyMatrices(base, trans);
-      this.heads.setMatrixAt(i, headMatrix);
-      this.hairs.setMatrixAt(i, hairMatrix);
-
-      const armLift = sit ? -1.35 : 0;
-      const lean = ped.lean ? 0.12 : 0;
-      const armSwing = ped.dead ? 0.4 : swing;
-      for (let side = 0; side < 2; side += 1) {
-        const sign = side === 0 ? 1 : -1;
-        const armX = sit ? armLift : -armSwing * sign;
-        const armZ = sign * (sit ? 0.9 : 0.05);
-        euler.set(armX + lean, 0, armZ);
-        rot.makeRotationFromEuler(euler);
-        rot.setPosition(sign * 0.32, 1.4, 0);
-        final.multiplyMatrices(base, rot);
-        this.arms.setMatrixAt(i * 2 + side, final);
-        const legX = sit ? -1.5 : armSwing * sign * 0.9;
-        euler.set(legX, 0, sign * 0.03);
-        rot.makeRotationFromEuler(euler);
-        rot.setPosition(sign * 0.13, sit ? 0.48 : 0.78, sit ? 0.2 : 0);
-        final.multiplyMatrices(base, rot);
-        this.legs.setMatrixAt(i * 2 + side, final);
-      }
-
-      shadow.makeTranslation(ped.x, ground + 0.03, ped.z);
-      this.shadows.setMatrixAt(i, shadow);
-    }
-    for (const mesh of [this.torsos, this.heads, this.hairs, this.arms, this.legs, this.shadows]) {
-      mesh.instanceMatrix.needsUpdate = true;
     }
     void dummy;
   }
 
-  panicAt(x, z, radius = 26, duration = 8) {
-    let scared = 0;
+  /**
+   * Pin a group of people to an explicit pose, for staging. `entries` are {x, z, yaw, walk?}.
+   * The first `entries.length` free pedestrians are used, so call this after `releasePins`.
+   */
+  place(entries) {
+    this.releasePins();
+    let cursor = 0;
+    for (const entry of entries) {
+      let ped = null;
+      for (let i = 0; i < this.peds.length; i += 1) {
+        const candidate = this.peds[(cursor + i) % this.peds.length];
+        if (candidate.pinned || candidate.dead) continue;
+        ped = candidate;
+        cursor = (cursor + i + 1) % this.peds.length;
+        break;
+      }
+      if (!ped) break;
+      ped.pinned = true;
+      ped.x = entry.x;
+      ped.z = entry.z;
+      ped.yaw = entry.yaw ?? 0;
+      ped.ground = entry.ground ?? this.plan.heightAt(ped.x, ped.z);
+      ped.phase = entry.phase ?? this.rng.float(0, Math.PI * 2);
+      ped.strideScale = entry.walk ?? 1;
+      ped.sit = 0;
+      ped.lean = 0;
+      ped.panic = 0;
+      ped.pause = 0;
+    }
+    this.update(0);
+  }
+
+  /** Give the whole crowd back to its paths; pinned people resume where they were put. */
+  releasePins() {
     for (const ped of this.peds) {
-      if (ped.dead || ped.kind === 'sit') continue;
+      ped.pinned = false;
+      ped.hidden = false;
+    }
+  }
+
+  /**
+   * For a still frame: keep only the people who were explicitly placed. The rest are moved far
+   * below the world so no stray walker wanders through the composition while it is being staged.
+   */
+  hideUnpinned() {
+    for (const ped of this.peds) ped.hidden = !ped.pinned;
+    this.update(0);
+  }
+
+  /** A fan of walkers along a street, facing along it: the cover-shot crowd. */
+  stageCover() {
+    const entries = [];
+    const rng = this.rng;
+    for (let i = 0; i < 26; i += 1) {
+      const side = i % 2 === 0 ? -1 : 1;
+      const along = 290 + (i >> 1) * 3.1;
+      const across = side * (9.4 + rng.float(0, 3.4));
+      entries.push({ x: 28 + across, z: along, yaw: rng.chance(0.5) ? Math.PI / 2 : -Math.PI / 2, walk: rng.float(0.7, 1.3) });
+    }
+    // A knot on the zebra crossing, mid-stride.
+    for (let i = 0; i < 8; i += 1) {
+      entries.push({ x: 20 + i * 2.2, z: 316 + (i % 2) * 1.4, yaw: Math.PI, walk: 1.2 });
+    }
+    this.place(entries);
+  }
+
+  /**
+   * A bullet found this person. `ref` is the pedestrian object the combat system hit; the fall
+   * direction is the sign of the shot's lateral travel.
+   */
+  kill(ref, fallDir = 1) {
+    if (!ref || ref.dead) return;
+    ref.dead = true;
+    ref.deadT = 0;
+    ref.deathDir = fallDir >= 0 ? 1 : -1;
+    ref.panic = 0;
+  }
+
+  /**
+   * Everyone within `radius` of a noise drops what they are doing and runs away from it. Returns
+   * how many heard, which the caller uses to decide whether a crime was witnessed.
+   */
+  panicAt(x, z, radius = 30, force = 8) {
+    let heard = 0;
+    for (const ped of this.peds) {
+      if (ped.dead) continue;
       const dx = ped.x - x;
       const dz = ped.z - z;
       const distance = Math.hypot(dx, dz);
       if (distance > radius) continue;
-      const inv = distance > 0.01 ? 1 / distance : 0;
-      ped.panicX = dx * inv + (inv === 0 ? 1 : 0);
-      ped.panicZ = dz * inv;
-      ped.panic = duration;
-      scared += 1;
+      const length = distance || 1;
+      ped.panicX = (dx / length) * force;
+      ped.panicZ = (dz / length) * force;
+      ped.panic = 3.4;
+      heard += 1;
     }
-    return scared;
+    return heard;
   }
 
-  nearest(x, z, maxDistance = 2.2) {
+  /** The nearest living pedestrian to a point, for target selection. */
+  nearest(x, z, maxDistance = 4) {
     let best = null;
     let bestDistance = maxDistance;
     for (const ped of this.peds) {
       if (ped.dead) continue;
       const distance = Math.hypot(ped.x - x, ped.z - z);
-      if (distance < bestDistance) { bestDistance = distance; best = ped; }
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = ped;
+      }
     }
     return best;
   }
 
-  kill(ped, direction = 1) {
-    if (!ped || ped.dead) return;
-    ped.dead = true;
-    ped.deadT = 0;
-    ped.deathDir = direction >= 0 ? 1 : -1;
-    ped.panic = 0;
-  }
-
-  /** Car strike: pedestrians within the bumper radius are knocked down. */
-  strike(x, z, radius = 1.9, speed = 10) {
+  strike(x, z, radius, speed) {
     let hit = null;
     for (const ped of this.peds) {
       if (ped.dead) continue;
-      if (Math.hypot(ped.x - x, ped.z - z) < radius) {
-        this.kill(ped, x > ped.x ? -1 : 1);
-        hit = ped;
-        break;
+      const distance = Math.hypot(ped.x - x, ped.z - z);
+      if (distance < radius) {
+        ped.dead = true;
+        ped.deadT = 0;
+        ped.deathDir = this.rng.chance(0.5) ? 1 : -1;
+        if (!hit) hit = { x: ped.x, z: ped.z };
       }
     }
     return hit;
   }
 
-  aliveCount() {
-    let count = 0;
-    for (const ped of this.peds) if (!ped.dead) count += 1;
-    return count;
+  /** Everyone within earshot runs directly away from a point. */
+  scatter(x, z, radius = 26) {
+    for (const ped of this.peds) {
+      const distance = Math.hypot(ped.x - x, ped.z - z);
+      if (distance > radius) continue;
+      ped.panic = this.rng.float(2.4, 4.4);
+      const angle = Math.atan2(ped.x - x, ped.z - z) + this.rng.float(-0.4, 0.4);
+      ped.panicX = Math.sin(angle);
+      ped.panicZ = Math.cos(angle);
+    }
+  }
+
+  update(dt) {
+    const peds = this.peds;
+    const dummy = this.dummy;
+    for (let i = 0; i < peds.length; i += 1) {
+      const ped = peds[i];
+      const L = i * 2;
+
+      if (ped.dead) {
+        ped.deadT += dt;
+        // Fall: tip over around the feet and lie still.
+        const fall = Math.min(1, ped.deadT * 2.6);
+        dummy.position.set(ped.x, ped.ground + 0.05, ped.z);
+        dummy.rotation.set(Math.PI / 2 * fall, ped.yaw, 0);
+        dummy.scale.set(ped.scale, ped.scale, ped.scale);
+        dummy.updateMatrix();
+        this.torsos.setMatrixAt(i, dummy.matrix);
+        this.hips.setMatrixAt(i, dummy.matrix);
+        this.heads.setMatrixAt(i, dummy.matrix);
+        this.hairs.setMatrixAt(i, dummy.matrix);
+        this.arms.setMatrixAt(L, dummy.matrix);
+        this.arms.setMatrixAt(L + 1, dummy.matrix);
+        this.legs.setMatrixAt(L, dummy.matrix);
+        this.legs.setMatrixAt(L + 1, dummy.matrix);
+        this.shoes.setMatrixAt(L, dummy.matrix);
+        this.shoes.setMatrixAt(L + 1, dummy.matrix);
+        dummy.position.set(ped.x, ped.ground + 0.04, ped.z);
+        dummy.rotation.set(0, ped.yaw, 0);
+        dummy.scale.set(1.5, 1, 1.1);
+        dummy.updateMatrix();
+        this.shadows.setMatrixAt(i, dummy.matrix);
+        continue;
+      }
+
+      // Pinned away for a still frame: park the parts far below the world.
+      if (ped.hidden) {
+        dummy.position.set(0, -90, 0);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(0.001, 0.001, 0.001);
+        dummy.updateMatrix();
+        this.torsos.setMatrixAt(i, dummy.matrix);
+        this.hips.setMatrixAt(i, dummy.matrix);
+        this.heads.setMatrixAt(i, dummy.matrix);
+        this.hairs.setMatrixAt(i, dummy.matrix);
+        this.arms.setMatrixAt(L, dummy.matrix);
+        this.arms.setMatrixAt(L + 1, dummy.matrix);
+        this.legs.setMatrixAt(L, dummy.matrix);
+        this.legs.setMatrixAt(L + 1, dummy.matrix);
+        this.shoes.setMatrixAt(L, dummy.matrix);
+        this.shoes.setMatrixAt(L + 1, dummy.matrix);
+        this.shadows.setMatrixAt(i, dummy.matrix);
+        continue;
+      }
+
+      // Motion: panic overrides path, pinned people stand still.
+      let moving = 0;
+      if (ped.panic > 0) {
+        ped.panic -= dt;
+        ped.x += ped.panicX * ped.speed * 2.4 * dt;
+        ped.z += ped.panicZ * ped.speed * 2.4 * dt;
+        ped.yaw = Math.atan2(ped.panicX, ped.panicZ);
+        moving = ped.speed * 2.4;
+        ped.phase += dt * 13;
+      } else if (!ped.pinned) {
+        if (ped.kind === 'walk') {
+          ped.t += ped.speed * ped.dir * dt;
+          const point = samplePath(ped.path, ped.t);
+          ped.x = point.x;
+          ped.z = point.z;
+          ped.yaw = point.heading + (ped.dir > 0 ? 0 : Math.PI);
+          moving = ped.speed;
+          ped.phase += dt * ped.speed * 3.1;
+        } else if (ped.kind === 'cross') {
+          ped.t += ped.speed * ped.dir * dt * 0.06;
+          if (ped.t > 1) { ped.t = 1; ped.dir = -1; }
+          if (ped.t < 0) { ped.t = 0; ped.dir = 1; }
+          ped.x = ped.ax + (ped.bx - ped.ax) * ped.t;
+          ped.z = ped.az + (ped.bz - ped.az) * ped.t;
+          ped.yaw = Math.atan2(ped.bx - ped.ax, ped.bz - ped.az) * (ped.dir > 0 ? 1 : -1);
+          moving = ped.speed;
+          ped.phase += dt * ped.speed * 3.1;
+        }
+        if (ped.kind !== 'sit' && ped.kind !== 'lean') ped.ground = this.plan.heightAt(ped.x, ped.z);
+      } else {
+        ped.phase += dt * 1.4;
+      }
+
+      // Keep off the inside of buildings.
+      if (moving > 0) {
+        const nearby = this.plan.queryColliders(ped.x, ped.z, 0.5, []);
+        for (const box of nearby) {
+          if (box.kind !== 'building') continue;
+          const push = resolveCircleBox(ped.x, ped.z, 0.42, box);
+          if (push) { ped.x = push.x; ped.z = push.z; }
+        }
+      }
+
+      const gait = Math.min(1, moving * 0.6);
+      // Even at rest there is a slow idle sway, so a still figure is never perfectly rigid.
+      const idle = 0.1 + Math.sin(ped.phase * 0.9) * 0.05;
+      const swing = Math.sin(ped.phase) * 0.55 * Math.max(gait, idle) * ped.strideScale;
+      const bounce = Math.abs(Math.sin(ped.phase)) * 0.035 * gait;
+      const scale = ped.scale * (ped.sit ? 0.94 : 1);
+      const baseY = ped.ground + bounce - (ped.sit ? 0.26 : 0);
+      const yaw = ped.yaw;
+
+      // Torso and hips. Hip joint sits at 0.78; the torso hangs above it.
+      dummy.position.set(ped.x, baseY + 1.06 * scale, ped.z);
+      dummy.rotation.set(ped.sit ? 0.16 : 0, yaw, 0);
+      dummy.scale.set(scale, scale, scale);
+      dummy.updateMatrix();
+      this.torsos.setMatrixAt(i, dummy.matrix);
+
+      dummy.position.set(ped.x, baseY + 0.78 * scale, ped.z);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.updateMatrix();
+      this.hips.setMatrixAt(i, dummy.matrix);
+
+      // Head and hair.
+      dummy.position.set(ped.x, baseY + 1.5 * scale, ped.z);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(scale, scale, scale);
+      dummy.updateMatrix();
+      this.heads.setMatrixAt(i, dummy.matrix);
+      this.hairs.setMatrixAt(i, dummy.matrix);
+
+      // Arms swing opposite the legs, pivoting at the shoulder.
+      const shoulderY = baseY + 1.24 * scale;
+      for (let side = 0; side < 2; side += 1) {
+        const dirSign = side === 0 ? 1 : -1;
+        const armSwing = swing * dirSign;
+        const cos = Math.cos(yaw);
+        const sin = Math.sin(yaw);
+        const offsetX = dirSign * 0.27 * scale;
+        const wx = ped.x + offsetX * cos;
+        const wz = ped.z - offsetX * sin;
+        dummy.position.set(wx, shoulderY - 0.2 * scale, wz);
+        dummy.rotation.set(armSwing, yaw, 0);
+        dummy.scale.set(scale, scale, scale);
+        dummy.updateMatrix();
+        this.arms.setMatrixAt(L + side, dummy.matrix);
+
+        // Legs swing from the hip socket, and the shoe rides the ankle.
+        const hipX = dirSign * 0.1 * scale;
+        const lx = ped.x + hipX * cos;
+        const lz = ped.z - hipX * sin;
+        const legAngle = -armSwing * 1.15;
+        dummy.position.set(lx, baseY + 0.78 * scale, lz);
+        dummy.rotation.set(legAngle, yaw, 0);
+        dummy.scale.set(scale, scale, scale);
+        dummy.updateMatrix();
+        this.legs.setMatrixAt(L + side, dummy.matrix);
+
+        // The shoe is placed at the leg's end, forward of the ankle when the leg swings.
+        const swingReach = Math.sin(legAngle) * 0.78 * scale;
+        dummy.position.set(lx, baseY + 0.05 * scale, lz + swingReach * Math.cos(yaw));
+        dummy.rotation.set(0, yaw, 0);
+        dummy.scale.set(scale, scale, scale);
+        dummy.updateMatrix();
+        this.shoes.setMatrixAt(L + side, dummy.matrix);
+      }
+
+      // Contact shadow under the feet.
+      dummy.position.set(ped.x, ped.ground + 0.04, ped.z);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(scale * 0.9, 1, scale * 0.9);
+      dummy.updateMatrix();
+      this.shadows.setMatrixAt(i, dummy.matrix);
+    }
+
+    for (const mesh of [this.torsos, this.hips, this.heads, this.hairs, this.arms, this.legs, this.shoes, this.shadows]) {
+      mesh.instanceMatrix.needsUpdate = true;
+    }
   }
 }

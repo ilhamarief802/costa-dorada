@@ -21,12 +21,69 @@ export default class Landmarks {
     this.group = new THREE.Group();
     this.group.name = 'landmarks';
     this.glowSprites = [];
+    this.flags = [];
     this.buildTower();
     this.buildViaduct();
     this.buildMarina();
     this.buildLighthouse();
     this.buildFountain();
     this.buildLifeguards();
+    this.buildFlags();
+  }
+
+  /**
+   * Cloth flags on masts: one vertex-animated plane per flag, waving in a shared wind, each on a
+   * pole tall enough to run from the ground to the cloth. Without the mast a flag reads as a
+   * floating rectangle of colour in the sky, which is exactly how it looked before.
+   */
+  buildFlags() {
+    const spots = [
+      { x: 278.6, z: 338.5, base: config.slabHeight, top: 9.6, colour: 0xc4473a },
+      { x: 261.4, z: 338.5, base: config.slabHeight, top: 9.6, colour: 0x2f7d72 },
+      { x: 44.0, z: 302.0, base: config.slabHeight, top: 12.4, colour: 0xd9a441 },
+      { x: 150.0, z: 342.4, base: config.slabHeight, top: 7.4, colour: 0x3d5a80 },
+      { x: -120.0, z: 342.4, base: config.slabHeight, top: 7.4, colour: 0xc4473a },
+    ];
+    const mastMaterial = new THREE.MeshStandardMaterial({ color: 0xc4bdad, roughness: 0.6, metalness: 0.35 });
+    for (const spot of spots) {
+      const height = spot.top - spot.base;
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.08, height, 6), mastMaterial);
+      mast.position.set(spot.x, spot.base + height / 2, spot.z);
+      mast.castShadow = true;
+      this.group.add(mast);
+
+      const geometry = new THREE.PlaneGeometry(1.9, 1.15, 10, 4);
+      geometry.translate(0.95, 0, 0);
+      const mesh = new THREE.Mesh(
+        geometry,
+        new THREE.MeshStandardMaterial({ color: spot.colour, roughness: 0.86, side: THREE.DoubleSide }),
+      );
+      // Hang the fly end just under the truck, so the cloth is attached to the top of the mast.
+      mesh.position.set(spot.x, spot.top - 0.75, spot.z);
+      mesh.castShadow = true;
+      this.group.add(mesh);
+      this.flags.push({ mesh, base: geometry.attributes.position.array.slice(), phase: spot.x * 0.07 });
+    }
+  }
+
+  /** Advance the flag wave. Called from the weather update with the shared clock. */
+  update(dt, elapsed = 0) {
+    for (const flag of this.flags) {
+      const position = flag.mesh.geometry.attributes.position;
+      const array = position.array;
+      const base = flag.base;
+      for (let i = 0; i < array.length; i += 3) {
+        const x = base[i];
+        const y = base[i + 1];
+        const along = x / 2.0;
+        // Amplitude grows with distance from the pole, so the hoist stays pinned.
+        const wave = Math.sin(elapsed * 4.2 + along * 3.4 + flag.phase + y * 1.6) * 0.16 * along;
+        array[i + 1] = base[i + 1] + wave * 0.5;
+        array[i + 2] = base[i + 2] + wave;
+      }
+      position.needsUpdate = true;
+      flag.mesh.geometry.computeVertexNormals();
+    }
   }
 
   buildTower() {

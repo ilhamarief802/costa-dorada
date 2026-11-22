@@ -44,6 +44,8 @@ export default class Roads {
     plate.receiveShadow = true;
     this.group.add(plate);
     this.plate = plate;
+    // Weather reads this to change the gloss at night; the plan is the shared data bus.
+    this.plan.roadMaterial = material;
   }
 
   buildPaint() {

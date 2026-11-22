@@ -476,7 +476,16 @@ export default class Props {
 
   setPeriod(period) {
     const night = period === 'night';
-    if (this.pools) this.pools.opacity = night ? 0.55 : 0;
-    this.lampHeads.emissiveIntensity = night ? 1.7 : 0.06;
+    if (this.pools) {
+      this.pools.opacity = night ? 0.82 : 0;
+      this.pools.visible = night;
+    }
+    // The road gloss is what makes a wet night read: darker asphalt with a low roughness so the
+    // lamp pools and neon smear across it.
+    if (this.plan.roadMaterial) {
+      this.plan.roadMaterial.roughness = night ? 0.34 : 0.94;
+      this.plan.roadMaterial.metalness = night ? 0.28 : 0.02;
+    }
+    this.lampHeads.emissiveIntensity = night ? 2.4 : 0.06;
   }
 }
