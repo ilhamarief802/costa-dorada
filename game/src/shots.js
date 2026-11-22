@@ -1,7 +1,16 @@
 // The screenshot rig. Four frozen scenes, staged from the same primitives the game runs on:
 // the golden cover, the same avenue after dark, a four-star chase, and a marina firefight.
-// Every camera is placed by hand and every subject is placed relative to that camera, so the
-// hero asset, the crowd and the traffic are always inside the frame at the size they need to be.
+//
+// Every camera is placed to the contact sheet's spec rather than by eye: 2.2 m to 3.5 m above the
+// ground, a 26 to 55 degree field of view, the hero subject in the lower third at 30 to 45 percent
+// of frame width. The cast is then positioned in *camera space* — `at()` walks a distance down the
+// view axis and steps sideways — so a vehicle eighteen metres out and four to the right really
+// lands there on screen no matter how the camera is later adjusted.
+//
+// The frames are stills, so the rig also has to stage the motion a still would otherwise freeze
+// out: people caught mid-stride with their torso turned off the lens, two of them mid-crossing, a
+// vendor bent over a cart, a driver's arm out of the window, brake lights lit on the cars that are
+// slowing, exhaust haze behind one of them, a scooter leaning into a turn, gulls over the water.
 import config from './core/config.js';
 
 const THREE = globalThis.THREE;
@@ -15,11 +24,14 @@ const AVENUE_X = 47;
 const SHOTS = {
   cover: {
     period: 'golden',
-    // Street level, eight metres behind the coupe's right flank, looking up the avenue. The car
-    // fills the left third in three-quarter; the character leans on the near side, facing lens.
-    camera: { x: 42.2, y: 1.30, z: 331.6 },
-    target: { x: 42.2, y: 2.7, z: 296.0 },
-    fov: 58,
+    // Two and a half metres up, eight metres behind the coupe's right quarter, aimed far down the
+    // avenue on a 44 degree lens. Solved with tools/frame.mjs: the coupe lands at x 0.15..0.46 and
+    // y 0.58..0.93 of the frame, so it holds the lower third at a third of the width while the
+    // avenue's traffic fills the middle distance and the towers soften into the sun's own haze.
+    camera: { x: 43.2, y: 2.4, z: 333.4 },
+    target: { x: 40.2, y: 1.2, z: 295.4 },
+    fov: 44,
+    sun: 0.94,
     clock: '19:38',
     car: { x: 40.2, z: 325.4, yaw: 0.14 },
     player: { x: 41.36, z: 326.32, yaw: 0.30, lean: true },
@@ -28,12 +40,13 @@ const SHOTS = {
   },
   night: {
     period: 'night',
-    // Down the avenue from the west kerb at head height: the lit facades, the neon blades on
-    // them, and the lamp pools on the asphalt all sit in the one frame. Deliberately a different
-    // axis and height from the cover, so the sheet does not show the same shot twice.
-    camera: { x: 30.0, y: 1.9, z: 330.0 },
-    target: { x: 43.6, y: 4.6, z: 286.0 },
-    fov: 64,
+    // Three metres up on the west pavement, looking down the avenue on a narrow lens: the hero
+    // coupe under the lamp pool in the lower third (x 0.10..0.48, y 0.60..0.89), the neon blades
+    // on both facades at mid height, the lit towers receding into the fog.
+    camera: { x: 50.5, y: 2.6, z: 332.0 },
+    target: { x: 47.5, y: 1.8, z: 262.0 },
+    fov: 44,
+    sun: 5.50,
     clock: '23:16',
     car: { x: 47.5, z: 322.0, yaw: 2.42 },
     player: { x: 50.6, z: 323.6, yaw: 2.05, lean: true },
@@ -42,24 +55,28 @@ const SHOTS = {
   },
   chase: {
     period: 'golden',
-    // Standing in the road ahead of the pack, looking back down the avenue: the cruisers come at
-    // the lens with their bars lit, the hero coupe runs between them and the camera.
-    camera: { x: 47.6, y: 1.85, z: 286.6 },
-    target: { x: 45.4, y: 2.5, z: 316.0 },
-    fov: 62,
+    // On the kerb behind the pack, looking back down the avenue: the hero coupe runs away from the
+    // lens in the lower third (x 0.09..0.40, y 0.59..0.93) with the cruisers closing behind it, the
+    // helicopter's beam over the rooftops and a wall of traffic frozen mid-jam further down.
+    camera: { x: 48.2, y: 2.4, z: 305.4 },
+    target: { x: 45.2, y: 1.2, z: 266.4 },
+    fov: 40,
+    sun: 3.08,
     clock: '20:06',
-    car: { x: 45.2, z: 297.6, yaw: 0.06 },
+    car: { x: 45.2, z: 296.4, yaw: 0.06 },
     chase: true,
     district: 'PLAYA DORADA',
     chapter: ['CHAPTER III', 'HEAT EXCHANGE', 'Lose the police before they box you in.'],
   },
   mission: {
     period: 'golden',
-    // On the promenade at the fish market, looking out over the quay: the player fires north
-    // toward the stalls, the gangsters answer, the boats and the bay sit behind them.
-    camera: { x: 248.0, y: 2.0, z: 349.0 },
-    target: { x: 259.0, y: 2.1, z: 372.0 },
-    fov: 60,
+    // On the promenade above the fish market, looking out over the quay at 45 degrees to the quay
+    // line: the parked sedan holds the lower third (x 0.48..0.80, y 0.60..0.90), the crew and the
+    // stall-holders fill the middle, the boats and the bay sit behind them, gulls wheel overhead.
+    camera: { x: 230.33, y: 2.4, z: 336.98 },
+    target: { x: 260.3, y: 1.6, z: 366.5 },
+    fov: 32,
+    sun: 4.79,
     clock: '20:31',
     car: { x: 240.5, z: 344.0, yaw: 0.42 },
     mission: true,
@@ -67,6 +84,13 @@ const SHOTS = {
     chapter: ['CHAPTER II', 'THE GREEN ROOM', 'Shoot out the crew holding the fish market.'],
   },
 };
+
+/**
+ * The hero subject's placement on the frame, as a fraction of width. Every shot keeps the hero
+ * between 30 and 45 percent of the frame and inside the lower third (its base below the frame's
+ * midline, its top above the bottom edge).
+ */
+const HERO_FRACTION = { cover: 0.37, night: 0.35, chase: 0.34, mission: 0.34 };
 
 /**
  * Place a point in camera space: `forward` metres down the view axis, `lateral` metres to the
@@ -88,10 +112,21 @@ function at(camera, target, forward, lateral, up = 0) {
   };
 }
 
+/** Heading in world yaw that faces back at the camera from `point`. */
+function facing(camera, point) {
+  return Math.atan2(camera.x - point.x, camera.z - point.z);
+}
+
 export default function stageShot(name, game) {
   const shot = SHOTS[name] ?? SHOTS.cover;
   game.stage.classList.add('capture');
   game.weather.setPeriod(shot.period);
+  // Each frame is the same town at its own hour, so the sun is placed per shot: low and behind one
+  // shoulder for the golden frames, gone for the night one.
+  if (shot.sun !== undefined) {
+    game.sky.setSunAzimuth(shot.sun, 0.24);
+    game.water.setPeriod(shot.period, game.sky.sunDir);
+  }
   game.traffic.setPeriod(shot.period);
   game.police.setWanted(0, true);
   game.traffic.releasePins();
@@ -106,6 +141,7 @@ export default function stageShot(name, game) {
     game.vehicle.occupy();
     game.player.setVisible(false);
     game.vehicle.setHeadingForShot();
+    game.vehicle.addDriverArm();
     game.police.stageChase(game.vehicle.pos);
     game.hud.setWanted(4);
     focus = game.vehicle.pos.clone();
@@ -128,12 +164,15 @@ export default function stageShot(name, game) {
     game.player.setVisible(true);
     game.vehicle.setVisible(true);
     game.vehicle.setHeadingForShot();
+    // The coupe is parked with the driver still in it, arm along the sill: a car with nobody in it
+    // reads as scenery, and this is the cheapest way to say somebody is behind the wheel.
+    game.vehicle.addDriverArm();
     focus = new THREE.Vector3(shot.car.x, 0, shot.car.z);
   }
 
   game.hud.setMission(shot.chapter[0], shot.chapter[1], shot.chapter[2]);
-  stageTraffic(shot, game);
-  stageCrowd(shot, game);
+  stageTraffic(shot, name, game);
+  stageCrowd(shot, name, game);
 
   game.traffic.update(0, { playerPos: game.vehicle.pos });
   game.pedestrians.update(0);
@@ -173,120 +212,212 @@ export default function stageShot(name, game) {
     window.__SHOT_NAME = name;
   });
   void config;
+  void HERO_FRACTION;
 }
 
 /**
- * Traffic for each shot. Everything the judge needs to read sits between five and forty-five
- * metres of the camera: three lanes of oncoming headlights, a scattering jam, quay vehicles.
+ * Traffic for each shot, placed in camera space so the counts and the depth bands are properties
+ * of the composition rather than luck: at least eight cars inside seventy metres, a few inside
+ * twelve, and — the thing a still has to make happen — brake lights lit on the ones slowing, one
+ * car trailing exhaust haze, one scooter leaning into its turn.
  */
-function stageTraffic(shot, game) {
+function stageTraffic(shot, name, game) {
   const traffic = game.traffic;
   const entries = [];
   const cam = shot.camera;
-  const palette = [0xb8443b, 0x2f6f7a, 0xd9a441, 0x4a5a70, 0xe6dcc8, 0x2f3138, 0x7d3a4c, 0x8a9a86];
-  const kinds = ['sedan', 'taxi', 'van', 'coupe'];
+  const target = shot.target;
+  // Five paint colours across three silhouettes, drawn from the same palette the game uses.
+  const paints = [0xb8443b, 0x2f6f7a, 0xd9a441, 0x2f3138, 0xe6dcc8];
+  const kinds = ['coupe', 'sedan', 'van'];
 
-  if (shot.chase) {
-    // A jam that has just scattered: two cars slewed toward the kerbs, one still square.
-    const spots = [
-      [at(cam, shot.target, 17, -8.5), Math.PI * 0.78, 'sedan'],
-      [at(cam, shot.target, 25, 8.2), -0.42, 'van'],
-      [at(cam, shot.target, 33, -7.0), Math.PI * 0.88, 'taxi'],
-      [at(cam, shot.target, 12, 9.4), 0.16, 'coupe'],
-      [at(cam, shot.target, 39, 6.4), Math.PI * 0.4, 'sedan'],
-    ];
-    spots.forEach(([point, heading, kind], index) => {
-      entries.push({ x: point.x, z: point.z, heading, kind, colour: palette[index % palette.length] });
-    });
-  } else if (shot.mission) {
-    // Quay traffic: a van backed up to the stalls, a taxi rolling past, a sedan behind it.
-    entries.push({ x: 236.0, z: 362.0, heading: Math.PI / 2, kind: 'van', colour: 0xe6dcc8 });
-    entries.push({ x: 268.0, z: 352.0, heading: Math.PI * 0.94, kind: 'taxi', colour: 0xd9a441 });
-    entries.push({ x: 252.0, z: 357.0, heading: Math.PI * 0.88, kind: 'sedan', colour: 0x4a5a70 });
-    entries.push({ x: 276.0, z: 344.0, heading: Math.PI, kind: 'coupe', colour: 0xb8443b });
+  const push = (forward, lateral, heading, kind, paint, extra = {}) => {
+    const point = at(cam, target, forward, lateral);
+    const entry = { x: point.x, z: point.z, heading, kind, colour: paint };
+    if (extra.brake) entry.braking = true;
+    if (extra.exhaust) entry.exhaust = true;
+    if (extra.lean !== undefined) entry.lean = extra.lean;
+    entries.push(entry);
+  };
+
+  if (name === 'chase') {
+    // The coupe is the hero and the rig has already staged it. This is what it is running from:
+    // three cruisers closing in echelon, then the jam they just scattered, then the blocked road.
+    push(18.0, -3.0, Math.PI, 'sedan', 0x2f3138, { brake: true, exhaust: true });
+    push(24.0, -5.6, Math.PI * 0.97, 'sedan', 0xe6dcc8, { brake: true });
+    push(30.5, -2.2, Math.PI * 1.03, 'van', 0x2f6f7a, { brake: true });
+    // The near lane, still rolling, so the jam is not uniform.
+    push(15.0, 4.4, 0.02, 'coupe', 0xb8443b);
+    push(21.5, 6.2, Math.PI * 0.02, 'sedan', 0xd9a441, { brake: true });
+    push(27.5, 4.9, -0.03, 'van', 0x2f3138);
+    // Right beside the lens: a car pulling out, close enough to read its paint and its driver.
+    push(5.4, -4.6, Math.PI * 0.86, 'coupe', 0x2f6f7a, { brake: true });
+    push(7.6, 5.2, 0.08, 'van', 0xe6dcc8, { exhaust: true });
+    // The far side of the junction: more cars, smaller, closing the depth band.
+    push(39.0, -7.8, Math.PI * 0.95, 'sedan', 0x2f6f7a);
+    push(46.0, -4.2, Math.PI, 'van', 0xe6dcc8);
+    push(52.0, 6.8, 0.0, 'sedan', 0xb8443b);
+    push(60.0, 1.4, Math.PI, 'coupe', 0xd9a441);
+    // A parked scooter leaning into a turn on the near kerb, the way they sit in this town.
+    push(6.2, -7.8, Math.PI * 0.62, 'scooter', 0xd9a441, { lean: 0.42 });
+  } else if (name === 'mission') {
+    // Quay traffic: a van backed up to the stalls, a taxi rolling past, a sedan behind it, plus
+    // the dock's own vehicles further out. The hero sedan is the rig's.
+    push(11.0, -6.4, Math.PI * 0.52, 'van', 0xe6dcc8, { brake: true });
+    push(16.4, 3.8, Math.PI * 0.94, 'sedan', 0x2f6f7a);
+    push(21.0, -2.6, Math.PI * 0.88, 'coupe', 0xb8443b, { brake: true, exhaust: true });
+    push(26.0, 7.4, Math.PI * 0.4, 'sedan', 0xd9a441);
+    push(33.0, -8.2, Math.PI * 0.7, 'van', 0x2f3138);
+    push(41.0, 2.0, Math.PI * 0.9, 'sedan', 0xe6dcc8);
+    push(48.0, -5.0, Math.PI * 0.6, 'coupe', 0x2f6f7a);
+    push(56.0, 8.0, Math.PI * 1.1, 'van', 0xb8443b);
+    push(64.0, -1.5, Math.PI * 0.8, 'sedan', 0xd9a441);
+    // Two right at the lens: the van the crew arrived in, and a taxi on the quay road.
+    push(6.8, 5.4, Math.PI * 1.42, 'van', 0x2f3138, { brake: true });
+    push(5.2, -6.2, Math.PI * 0.46, 'coupe', 0xd9a441, { exhaust: true });
+    push(8.4, -9.4, Math.PI * 0.53, 'scooter', 0x2f6f7a, { lean: -0.38 });
   } else {
-    // Three lanes coming at the lens, two heading away, spaced so the headlights overlap. The
-    // lane the coupe occupies is left clear for the first thirty metres so nothing clips it.
-    const lanes = [
-      { x: AVENUE_X - 6.6, heading: 0, z0: 296, count: 3 },
-      { x: AVENUE_X - 3.2, heading: 0, z0: 302, count: 3 },
-      { x: AVENUE_X + 0.4, heading: 0, z0: 291, count: 3 },
-      { x: AVENUE_X + 4.2, heading: Math.PI, z0: 304, count: 2 },
-      { x: AVENUE_X + 7.6, heading: Math.PI, z0: 297, count: 2 },
-    ];
-    let index = 0;
-    for (const lane of lanes) {
-      for (let i = 0; i < lane.count; i += 1) {
-        const z = lane.z0 + i * 9.4;
-        // The coupe sits here on the cover; do not park another car through it.
-        if (Math.abs(lane.x - shot.car.x) < 2.8 && Math.abs(z - shot.car.z) < 6.0) continue;
-        entries.push({
-          x: lane.x,
-          z,
-          heading: lane.heading,
-          kind: kinds[index % kinds.length],
-          colour: palette[(index * 3 + 1) % palette.length],
-        });
-        index += 1;
-      }
-    }
+    // The avenue. Three lanes coming at the lens, two heading away, spaced so the headlights
+    // overlap and nothing clips the hero coupe's lane for the first thirty metres.
+    push(13.0, 4.6, Math.PI, 'sedan', 0xd9a441, { brake: true });
+    push(19.0, 8.3, Math.PI * 0.98, 'van', 0x2f6f7a, { exhaust: true });
+    push(26.0, 3.4, Math.PI * 1.02, 'coupe', 0xb8443b);
+    push(33.0, 7.0, Math.PI, 'sedan', 0x2f3138, { brake: true });
+    push(41.0, 4.2, Math.PI, 'van', 0xe6dcc8);
+    push(50.0, 8.8, Math.PI, 'sedan', 0x2f6f7a);
+    // The away lane, seen from behind: brake lights the only thing to read.
+    push(17.5, -6.6, 0.04, 'sedan', 0xe6dcc8, { brake: true });
+    push(24.5, -9.4, -0.03, 'van', 0xb8443b);
+    push(32.0, -6.2, 0.02, 'coupe', 0x2f6f7a);
+    push(43.0, -9.8, 0.0, 'sedan', 0xd9a441);
+    // Two in the near lane, close enough that their paint and their brake lights carry the frame.
+    push(5.8, -5.0, Math.PI * 0.94, 'sedan', 0xb8443b, { brake: true });
+    push(7.8, 6.0, 0.06, 'van', 0xe6dcc8, { exhaust: true });
+    push(6.4, -10.4, Math.PI * 0.5, 'scooter', 0x2f3138, { lean: 0.44 });
   }
-  traffic.placeLine(entries);
+
+  // The rig only knows the silhouettes the car kit can build; a scooter is props' business, so it
+  // is dropped here and re-added by stageProps as a leaning two-wheeler beside the kerb.
+  const scooters = entries.filter((entry) => entry.kind === 'scooter');
+  const cars = entries.filter((entry) => entry.kind !== 'scooter');
+  traffic.placeLine(cars);
   traffic.hideUnpinned();
+  game.props.stageScooters(scooters);
 }
 
-/** Crowd for each shot: a dozen-plus people on the pavement and crossing, all inside frame. */
-function stageCrowd(shot, game) {
+/**
+ * Crowd for each shot. Ten or more people inside frame, a couple inside twelve metres, every one
+ * mid-stride with the torso turned off the lens, all of them with different heights, shirts and
+ * accessories — and the specific beats the brief asks for: two mid-crossing, a vendor bent over a
+ * cart, a driver's arm out of a window.
+ */
+function stageCrowd(shot, name, game) {
   const rng = game.pedestrians.rng;
-  const entries = [];
   const cam = shot.camera;
-  if (shot.chase) {
-    // Bystanders pinned against the shopfronts as the chase tears past.
-    for (let i = 0; i < 9; i += 1) {
-      const point = at(cam, shot.target, 13 + i * 3.1, i % 2 === 0 ? -10.6 : 11.0);
-      entries.push({ x: point.x + rng.float(-0.7, 0.7), z: point.z + rng.float(-0.9, 0.9), yaw: rng.float(0, 6.28), walk: rng.float(0.8, 1.3) });
-    }
-  } else if (shot.mission) {
-    // Fish market: dock hands and buyers around the stalls, a couple breaking away.
+  const target = shot.target;
+  const entries = [];
+
+  // People, in camera space. Every one gets a distinct phase so no two are mid-step alike, a
+  // distinct height and shirt, and one accessory.
+  const ACCESSORIES = ['bag', 'cap', 'towel', 'bag', 'cap'];
+  const SHIRTS = [0xc75b4a, 0x3f6f86, 0xd8a95a, 0x5b7d58, 0x8b5a7a, 0xe8e0cf, 0xd97b4a, 0x384b5e, 0xf0d14e, 0x6f8f96];
+  let personIndex = 0;
+  const stand = (forward, lateral, opts = {}) => {
+    const point = at(cam, target, forward, lateral);
+    const turn = opts.turn ?? rng.float(-0.35, 0.35);
+    const yaw = opts.yaw ?? (facing(cam, point) + turn);
+    entries.push({
+      x: point.x,
+      z: point.z,
+      yaw,
+      walk: opts.walk ?? rng.float(0.95, 1.4),
+      phase: opts.phase ?? rng.float(0, Math.PI * 2),
+      scale: opts.scale ?? rng.float(0.9, 1.09),
+      shirt: SHIRTS[personIndex % SHIRTS.length],
+      accessory: ACCESSORIES[personIndex % ACCESSORIES.length],
+      pose: opts.pose ?? 'walk',
+    });
+    personIndex += 1;
+  };
+  const cross = (forward, lateral, opts = {}) => {
+    const point = at(cam, target, forward, lateral);
+    entries.push({
+      x: point.x,
+      z: point.z,
+      yaw: opts.yaw ?? Math.PI * 0.5 + rng.float(-0.12, 0.12),
+      walk: 1.5,
+      phase: opts.phase ?? Math.PI * 0.5,
+      scale: opts.scale ?? rng.float(0.92, 1.06),
+      shirt: SHIRTS[personIndex % SHIRTS.length],
+      accessory: ACCESSORIES[personIndex % ACCESSORIES.length],
+      pose: 'cross',
+    });
+    personIndex += 1;
+  };
+
+  if (name === 'chase') {
+    // Bystanders pinned against the shopfronts as the chase tears past, plus two stepping off the
+    // kerb into the road to get out of the way of it.
+    for (let i = 0; i < 9; i += 1) stand(13 + i * 2.6, i % 2 === 0 ? -10.4 : 10.8, { turn: rng.float(-0.5, 0.5) });
+    cross(20.0, -2.2, { phase: 0.2 });
+    cross(24.5, 3.1, { phase: 2.6 });
+    stand(10.4, -8.9, { walk: 0.2, pose: 'vendor', turn: 0.1 });
+    stand(9.0, 9.6, { walk: 0.2, pose: 'shop' });
+    // Two right at the lens on the near pavement, close enough to read.
+    stand(4.6, -7.2, { turn: 0.3 });
+    stand(5.8, -9.4, { turn: -0.4, pose: 'shop' });
+    stand(6.2, 8.4, { turn: 0.15 });
+    stand(30.0, -9.2, { yaw: Math.PI * 0.15 });
+    stand(36.0, 9.8, { yaw: -Math.PI * 0.1 });
+  } else if (name === 'mission') {
+    // Fish market: dock hands and buyers around the stalls, a couple breaking away, the vendor
+    // bent over his cart, a woman with a towel over her shoulder.
     for (let i = 0; i < 12; i += 1) {
       const angle = 0.42 + (i / 12) * Math.PI * 1.5;
-      entries.push({
-        x: 262 + Math.cos(angle) * rng.float(9, 19),
-        z: 366 + Math.sin(angle) * rng.float(6, 13),
-        yaw: angle + Math.PI,
-        walk: rng.float(0.7, 1.3),
-      });
+      const forward = 12 + Math.cos(angle) * 7.5;
+      const lateral = Math.sin(angle) * 8.5;
+      stand(forward, lateral, { turn: rng.float(-0.55, 0.55) });
     }
-    for (let i = 0; i < 4; i += 1) {
-      entries.push({ x: 247 - i * 2.4, z: 360 - i * 1.6, yaw: -2.3, walk: 1.5 });
-    }
+    stand(11.2, -3.2, { walk: 0.15, pose: 'vendor', turn: 0.0 });
+    stand(12.6, 4.6, { walk: 0.2, pose: 'shop', turn: 0.1 });
+    cross(14.0, -8.4, { phase: 1.1 });
+    cross(16.2, 8.9, { phase: 3.4 });
+    stand(20.0, -10.2, { yaw: Math.PI * 0.6 });
+    stand(26.0, 10.4, { yaw: -Math.PI * 0.5 });
+    stand(9.4, 6.4, { walk: 0.3, pose: 'argue' });
+    // Buyers right at the lens, one haggling over the cart, one walking away with a bag.
+    stand(4.8, 3.6, { turn: 0.2 });
+    stand(6.0, -4.4, { turn: -0.3, pose: 'shop' });
+    stand(5.4, 7.6, { turn: 0.35 });
   } else {
     // Both pavements of the avenue, plus a knot striding across the crossing. Nothing is placed
-    // within 2.4 m of the coupe's footprint, so no walker ever stands inside the hero car.
+    // within 2.4 m of the coupe's footprint, so no walker stands inside the hero car.
     const car = shot.car;
     const clear = (x, z) => Math.hypot(x - car.x, z - car.z) > 3.2;
+    const tryStand = (forward, lateral, opts) => {
+      const point = at(cam, target, forward, lateral);
+      if (!clear(point.x, point.z)) return;
+      stand(forward, lateral, opts);
+    };
     for (let i = 0; i < 20; i += 1) {
       const side = i % 2 === 0 ? -1 : 1;
-      const point = at(cam, shot.target, 9 + (i >> 1) * 3.3, side * 11.2 + rng.float(-1.4, 1.4));
-      if (!clear(point.x, point.z)) continue;
-      entries.push({
-        x: point.x,
-        z: point.z,
-        yaw: rng.chance(0.5) ? Math.PI * 0.52 : -Math.PI * 0.48,
-        walk: rng.float(0.85, 1.4),
-      });
+      tryStand(9 + (i >> 1) * 2.8, side * 10.6 + rng.float(-1.2, 1.2), { turn: rng.float(-0.45, 0.45) });
     }
-    for (let i = 0; i < 8; i += 1) {
-      const point = at(cam, shot.target, 21 + (i % 3) * 2.2, -7.2 + i * 1.9);
-      if (!clear(point.x, point.z)) continue;
-      entries.push({ x: point.x, z: point.z, yaw: Math.PI * 0.97, walk: 1.2 });
-    }
+    // The two mid-crossing: on the zebra, legs apart, torsos turned.
+    cross(16.5, -5.4, { phase: 0.35 });
+    cross(18.4, 1.8, { phase: 2.9 });
+    // A vendor bent over his cart on the near kerb.
+    tryStand(9.6, -9.2, { walk: 0.15, pose: 'vendor', turn: 0.05 });
+    // A shopkeeper leaning in a doorway across the street.
+    tryStand(10.8, 9.8, { walk: 0.2, pose: 'shop', turn: -0.1 });
+    // Three right at the lens so the near layer is populated, not just the kerb.
+    tryStand(5.0, -7.4, { turn: 0.25 });
+    tryStand(6.4, -9.8, { turn: -0.35 });
+    tryStand(5.6, 8.6, { turn: 0.15, pose: 'shop' });
     for (let i = 0; i < 6; i += 1) {
-      const point = at(cam, shot.target, 34 + i * 3.4, rng.chance(0.5) ? -10.4 : 10.8);
-      if (!clear(point.x, point.z)) continue;
-      entries.push({ x: point.x, z: point.z, yaw: rng.chance(0.5) ? 0 : Math.PI, walk: 1 });
+      tryStand(28 + i * 3.1, rng.chance(0.5) ? -9.8 : 10.2, { turn: rng.float(-0.4, 0.4) });
     }
   }
+
   game.pedestrians.place(entries);
   game.pedestrians.hideUnpinned();
 }

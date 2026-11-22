@@ -161,12 +161,17 @@ export default class Buildings {
     frames.castShadow = false;
     this.group.add(frames);
     const makeSet = (list, glowing, hue) => {
+      // Window glass: a low-cost sky reflection rather than a black hole. The environment map is the
+      // PMREM of the sky gradient built at boot, so a window at a grazing angle picks up the sunset
+      // and reads as glass; from square on it stays dark and shows the room behind. `envMapIntensity`
+      // is turned up and roughness right down, which is the whole trick.
       const material = new THREE.MeshStandardMaterial({
-        color: glowing ? 0x2f3238 : 0x20262c,
-        roughness: glowing ? 0.28 : 0.34,
-        metalness: 0.42,
+        color: glowing ? 0x2a2e34 : 0x161a20,
+        roughness: glowing ? 0.14 : 0.06,
+        metalness: glowing ? 0.86 : 0.94,
+        envMapIntensity: glowing ? 1.6 : 1.9,
         emissive: glowing ? hue : 0x000000,
-        emissiveIntensity: glowing ? 0.08 : 0,
+        emissiveIntensity: glowing ? 0.3 : 0,
         side: THREE.FrontSide,
       });
       const mesh = new THREE.InstancedMesh(geometry, material, list.length);
@@ -215,12 +220,16 @@ export default class Buildings {
     }
     const geometry = new THREE.PlaneGeometry(1, 1);
     const place = (list, glowing) => {
+      // Shopfront glass: the same sky reflection as the tower windows, plus the warm interior a
+      // shop spills onto the pavement. A flat black rectangle at street level is the single most
+      // common tell of an unfinished city, so this is the one surface worth the extra cost.
       const material = new THREE.MeshStandardMaterial({
-        color: glowing ? 0x3c3a30 : 0x171d21,
-        roughness: 0.2,
-        metalness: 0.5,
+        color: glowing ? 0x3a3730 : 0x141a1e,
+        roughness: glowing ? 0.1 : 0.08,
+        metalness: 0.88,
+        envMapIntensity: glowing ? 1.5 : 1.7,
         emissive: glowing ? 0xffc27a : 0x000000,
-        emissiveIntensity: glowing ? 0.12 : 0,
+        emissiveIntensity: glowing ? 0.55 : 0,
       });
       const mesh = new THREE.InstancedMesh(geometry, material, list.length);
       const dummy = new THREE.Object3D();

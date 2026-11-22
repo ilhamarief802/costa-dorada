@@ -17,6 +17,8 @@ const SHIRTS = [
 const SKINS = [0xe8b98f, 0xc98d62, 0x9d6644, 0x6f4530, 0xf0c9a4, 0xb8794f];
 const TROUSERS = [0x2f3540, 0x4a4f57, 0x7c6b53, 0x2b3a4a, 0x5a4a3e, 0x27302f, 0xd8d2c4];
 const HAIRS = [0x2a1c14, 0x4a3220, 0x171717, 0x6b4a2a, 0x9a8d7a, 0xc9a66b];
+/** The accessory colours: bags, caps and towels, in the same sun-faded range as the shirts. */
+const ACCENTS = [0x2a2b2e, 0xb8462f, 0x35566b, 0xd8c9a4, 0x4d6b4a, 0xa8863c, 0x7a4a52];
 
 function blockPath(block, radius) {
   const c = 4;
@@ -83,6 +85,27 @@ const G = {
     return geometry;
   })(),
   arm: new THREE.BoxGeometry(0.105, 0.44, 0.11),
+  // Forearm and hand: a short sleeve cuff and a fist, so an arm reads as an arm at 15 m rather
+  // than a stick. Instanced twice per person, hung off the same shoulder pivot.
+  forearm: (() => {
+    const geometry = new THREE.BoxGeometry(0.088, 0.3, 0.096);
+    geometry.translate(0, -0.15, 0);
+    return geometry;
+  })(),
+  hand: new THREE.SphereGeometry(0.052, 6, 5),
+  // A shoulder cap: the jacket's deltoid, which is what gives a silhouette its human taper.
+  shoulder: new THREE.SphereGeometry(0.083, 7, 6),
+  // Accessories. A shopping bag hangs from a hand, a cap sits on the head, a towel is slung over
+  // one shoulder; each person gets exactly one of them.
+  bag: new THREE.BoxGeometry(0.2, 0.26, 0.11),
+  cap: (() => {
+    const geometry = new THREE.SphereGeometry(0.128, 9, 6, 0, Math.PI * 2, 0, Math.PI * 0.5);
+    geometry.scale(1, 0.72, 1);
+    geometry.translate(0, 0.02, 0);
+    return geometry;
+  })(),
+  capBrim: new THREE.BoxGeometry(0.19, 0.018, 0.09),
+  towel: new THREE.BoxGeometry(0.1, 0.44, 0.035),
   // Legs run from the hip socket at 0.78 down to a sole at 0.0, so feet touch the pavement.
   leg: (() => {
     const geometry = new THREE.BoxGeometry(0.135, 0.78, 0.15);
@@ -227,8 +250,18 @@ export default class Pedestrians {
     this.heads = make(G.head, skinMaterial, total);
     this.hairs = make(G.hair, hairMaterial, total);
     this.arms = make(G.arm, clothMaterial, total * 2);
+    this.forearms = make(G.forearm, skinMaterial, total * 2);
+    this.hands = make(G.hand, skinMaterial, total * 2);
+    this.shoulders = make(G.shoulder, clothMaterial, total * 2);
     this.legs = make(G.leg, trouserMaterial, total * 2);
     this.shoes = make(G.shoe, shoeMaterial, total * 2);
+
+    // One accessory slot per person, whichever it is. The meshes are all allocated and each
+    // person's accessory is chosen in `applyLook`; unused slots are collapsed to nothing.
+    this.bags = make(G.bag, clothMaterial, total);
+    this.caps = make(G.cap, clothMaterial, total);
+    this.capBrims = make(G.capBrim, clothMaterial, total);
+    this.towels = make(G.towel, clothMaterial, total);
 
     const shadowGeometry = new THREE.PlaneGeometry(1.1, 1.1);
     shadowGeometry.rotateX(-Math.PI / 2);
@@ -243,24 +276,40 @@ export default class Pedestrians {
 
     // Per-instance colours, set once.
     this.peds.forEach((ped, i) => {
+      const accent = ACCENTS[i % ACCENTS.length];
       this.torsos.setColorAt(i, color.setHex(ped.shirt));
       this.hips.setColorAt(i, color.setHex(ped.trousers));
       this.legs.setColorAt(i * 2, color.setHex(ped.trousers));
       this.legs.setColorAt(i * 2 + 1, color.setHex(ped.trousers));
       this.arms.setColorAt(i * 2, color.setHex(ped.shirt));
       this.arms.setColorAt(i * 2 + 1, color.setHex(ped.shirt));
+      this.forearms.setColorAt(i * 2, color.setHex(ped.skin));
+      this.forearms.setColorAt(i * 2 + 1, color.setHex(ped.skin));
+      this.shoulders.setColorAt(i * 2, color.setHex(ped.shirt));
+      this.shoulders.setColorAt(i * 2 + 1, color.setHex(ped.shirt));
       this.heads.setColorAt(i, color.setHex(ped.skin));
       this.hairs.setColorAt(i, color.setHex(ped.hair));
+      this.bags.setColorAt(i, color.setHex(accent));
+      this.caps.setColorAt(i, color.setHex(accent));
+      this.capBrims.setColorAt(i, color.setHex(accent));
+      this.towels.setColorAt(i, color.setHex(accent));
     });
-    for (const mesh of [this.torsos, this.hips, this.heads, this.hairs, this.arms, this.legs, this.shoes]) {
+    for (const mesh of [
+      this.torsos, this.hips, this.heads, this.hairs, this.arms, this.forearms, this.hands,
+      this.shoulders, this.legs, this.shoes, this.bags, this.caps, this.capBrims, this.towels,
+    ]) {
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     }
     void dummy;
   }
 
   /**
-   * Pin a group of people to an explicit pose, for staging. `entries` are {x, z, yaw, walk?}.
-   * The first `entries.length` free pedestrians are used, so call this after `releasePins`.
+   * Pin a group of people to an explicit pose, for staging. `entries` are
+   * {x, z, yaw, walk?, phase?, scale?, shirt?, accessory?, pose?}.
+   *
+   * The first `entries.length` free pedestrians are used, so call this after `releasePins`. Every
+   * staged person gets their own height, shirt colour, stride phase and accessory, which is what
+   * stops a staged crowd reading as one model copied twenty times.
    */
   place(entries) {
     this.releasePins();
@@ -286,6 +335,27 @@ export default class Pedestrians {
       ped.lean = 0;
       ped.panic = 0;
       ped.pause = 0;
+      // Look and pose. These are properties of a staged person only; the walking crowd keeps the
+      // look it was built with.
+      if (entry.scale !== undefined) ped.scale = entry.scale;
+      if (entry.shirt !== undefined) ped.shirt = entry.shirt;
+      if (entry.ground !== undefined) ped.ground = entry.ground;
+      ped.accessory = entry.accessory ?? null;
+      ped.pose = entry.pose ?? 'walk';
+      const index = this.peds.indexOf(ped);
+      if (index >= 0) {
+        const color = new THREE.Color();
+        if (entry.shirt !== undefined) {
+          this.torsos.setColorAt(index, color.setHex(ped.shirt));
+          this.arms.setColorAt(index * 2, color.setHex(ped.shirt));
+          this.arms.setColorAt(index * 2 + 1, color.setHex(ped.shirt));
+          this.shoulders.setColorAt(index * 2, color.setHex(ped.shirt));
+          this.shoulders.setColorAt(index * 2 + 1, color.setHex(ped.shirt));
+          for (const mesh of [this.torsos, this.arms, this.shoulders]) {
+            if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+          }
+        }
+      }
     }
     this.update(0);
   }
@@ -414,16 +484,7 @@ export default class Pedestrians {
         dummy.rotation.set(Math.PI / 2 * fall, ped.yaw, 0);
         dummy.scale.set(ped.scale, ped.scale, ped.scale);
         dummy.updateMatrix();
-        this.torsos.setMatrixAt(i, dummy.matrix);
-        this.hips.setMatrixAt(i, dummy.matrix);
-        this.heads.setMatrixAt(i, dummy.matrix);
-        this.hairs.setMatrixAt(i, dummy.matrix);
-        this.arms.setMatrixAt(L, dummy.matrix);
-        this.arms.setMatrixAt(L + 1, dummy.matrix);
-        this.legs.setMatrixAt(L, dummy.matrix);
-        this.legs.setMatrixAt(L + 1, dummy.matrix);
-        this.shoes.setMatrixAt(L, dummy.matrix);
-        this.shoes.setMatrixAt(L + 1, dummy.matrix);
+        this.parkAll(i, dummy);
         dummy.position.set(ped.x, ped.ground + 0.04, ped.z);
         dummy.rotation.set(0, ped.yaw, 0);
         dummy.scale.set(1.5, 1, 1.1);
@@ -438,16 +499,7 @@ export default class Pedestrians {
         dummy.rotation.set(0, 0, 0);
         dummy.scale.set(0.001, 0.001, 0.001);
         dummy.updateMatrix();
-        this.torsos.setMatrixAt(i, dummy.matrix);
-        this.hips.setMatrixAt(i, dummy.matrix);
-        this.heads.setMatrixAt(i, dummy.matrix);
-        this.hairs.setMatrixAt(i, dummy.matrix);
-        this.arms.setMatrixAt(L, dummy.matrix);
-        this.arms.setMatrixAt(L + 1, dummy.matrix);
-        this.legs.setMatrixAt(L, dummy.matrix);
-        this.legs.setMatrixAt(L + 1, dummy.matrix);
-        this.shoes.setMatrixAt(L, dummy.matrix);
-        this.shoes.setMatrixAt(L + 1, dummy.matrix);
+        this.parkAll(i, dummy);
         this.shadows.setMatrixAt(i, dummy.matrix);
         continue;
       }
@@ -498,15 +550,28 @@ export default class Pedestrians {
       const gait = Math.min(1, moving * 0.6);
       // Even at rest there is a slow idle sway, so a still figure is never perfectly rigid.
       const idle = 0.1 + Math.sin(ped.phase * 0.9) * 0.05;
-      const swing = Math.sin(ped.phase) * 0.55 * Math.max(gait, idle) * ped.strideScale;
+      const stride = Math.max(gait, idle) * ped.strideScale;
+      const swing = Math.sin(ped.phase) * 0.55 * stride;
       const bounce = Math.abs(Math.sin(ped.phase)) * 0.035 * gait;
       const scale = ped.scale * (ped.sit ? 0.94 : 1);
       const baseY = ped.ground + bounce - (ped.sit ? 0.26 : 0);
       const yaw = ped.yaw;
+      const pose = ped.pose ?? 'walk';
+      const cos = Math.cos(yaw);
+      const sin = Math.sin(yaw);
+
+      // A staged vendor is folded over his cart and a shopkeeper leans in a doorway; both keep the
+      // legs planted while the torso pitches. The lean is in the figure's own frame, so it reads
+      // the same from any camera angle.
+      const torsoPitch = pose === 'vendor' ? 0.92 : pose === 'shop' ? -0.22 : pose === 'argue' ? 0.06 : (ped.sit ? 0.16 : 0);
+      // A mid-crossing figure is turned off the lens and caught with its legs apart.
+      const legSpread = pose === 'cross' ? 0.38 : 0;
+      // A person arguing or leaning braces their arms out from the body.
+      const armOut = pose === 'argue' ? 0.42 : pose === 'vendor' ? 0.34 : pose === 'shop' ? 0.16 : 0;
 
       // Torso and hips. Hip joint sits at 0.78; the torso hangs above it.
-      dummy.position.set(ped.x, baseY + 1.06 * scale, ped.z);
-      dummy.rotation.set(ped.sit ? 0.16 : 0, yaw, 0);
+      dummy.position.set(ped.x, baseY + (pose === 'vendor' ? 0.94 : 1.06) * scale, ped.z);
+      dummy.rotation.set(torsoPitch, yaw, 0);
       dummy.scale.set(scale, scale, scale);
       dummy.updateMatrix();
       this.torsos.setMatrixAt(i, dummy.matrix);
@@ -516,35 +581,73 @@ export default class Pedestrians {
       dummy.updateMatrix();
       this.hips.setMatrixAt(i, dummy.matrix);
 
-      // Head and hair.
-      dummy.position.set(ped.x, baseY + 1.5 * scale, ped.z);
-      dummy.rotation.set(0, yaw, 0);
+      // Head and hair. A bent-over vendor looks down at the cart.
+      const headBob = pose === 'vendor' ? -0.09 : 0;
+      const headY = baseY + (1.5 + headBob) * scale;
+      const headForward = pose === 'vendor' ? 0.22 * scale : 0;
+      dummy.position.set(ped.x + headForward * sin, headY, ped.z + headForward * cos);
+      dummy.rotation.set(torsoPitch * 0.5, yaw, 0);
       dummy.scale.set(scale, scale, scale);
       dummy.updateMatrix();
       this.heads.setMatrixAt(i, dummy.matrix);
       this.hairs.setMatrixAt(i, dummy.matrix);
 
-      // Arms swing opposite the legs, pivoting at the shoulder.
+      // Accessories. Exactly one per person: a bag hanging from the right hand, a cap on the
+      // head, or a towel slung over the left shoulder. The other slots collapse to nothing.
+      this.writeAccessory(i, ped.accessory ?? null, ped, dummy, { baseY, scale, yaw, cos, sin, headY, armOut, swing, pose, torsoPitch });
+
+      // Arms swing opposite the legs, pivoting at the shoulder. Each arm is a shoulder cap, an
+      // upper arm, a forearm and a fist, all hung off the same pivot so they move together.
       const shoulderY = baseY + 1.24 * scale;
       for (let side = 0; side < 2; side += 1) {
         const dirSign = side === 0 ? 1 : -1;
-        const armSwing = swing * dirSign;
-        const cos = Math.cos(yaw);
-        const sin = Math.sin(yaw);
-        const offsetX = dirSign * 0.27 * scale;
+        const armSwing = swing * dirSign + (pose === 'vendor' ? dirSign * -0.55 : 0) + armOut * dirSign * 0.5;
+        const offsetX = dirSign * (0.27 + armOut * 0.1) * scale;
         const wx = ped.x + offsetX * cos;
         const wz = ped.z - offsetX * sin;
-        dummy.position.set(wx, shoulderY - 0.2 * scale, wz);
+        const pivotY = shoulderY - 0.2 * scale + (pose === 'vendor' ? -0.16 * scale : 0);
+
+        // Shoulder cap.
+        dummy.position.set(ped.x + dirSign * 0.2 * scale * cos, shoulderY - 0.02 * scale, ped.z - dirSign * 0.2 * scale * sin);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.scale.set(scale, scale, scale);
+        dummy.updateMatrix();
+        this.shoulders.setMatrixAt(L + side, dummy.matrix);
+
+        // Upper arm, hanging from the shoulder.
+        dummy.position.set(wx, pivotY, wz);
         dummy.rotation.set(armSwing, yaw, 0);
         dummy.scale.set(scale, scale, scale);
         dummy.updateMatrix();
         this.arms.setMatrixAt(L + side, dummy.matrix);
 
+        // Forearm continues past the elbow, so the arm has a bend instead of being one stick.
+        const elbowDrop = 0.22 * scale;
+        const elbowY = pivotY - elbowDrop * Math.cos(armSwing);
+        const elbowReach = elbowDrop * Math.sin(armSwing);
+        const ex = wx + elbowReach * sin;
+        const ez = wz + elbowReach * cos;
+        dummy.position.set(ex, elbowY, ez);
+        dummy.rotation.set(armSwing * 1.35, yaw, 0);
+        dummy.scale.set(scale, scale, scale);
+        dummy.updateMatrix();
+        this.forearms.setMatrixAt(L + side, dummy.matrix);
+
+        // Fist at the end of the forearm.
+        const wristDrop = 0.3 * scale;
+        const wristY = elbowY - wristDrop * Math.cos(armSwing * 1.35);
+        const wristReach = wristDrop * Math.sin(armSwing * 1.35);
+        dummy.position.set(ex + wristReach * sin, wristY, ez + wristReach * cos);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.scale.set(scale, scale, scale);
+        dummy.updateMatrix();
+        this.hands.setMatrixAt(L + side, dummy.matrix);
+
         // Legs swing from the hip socket, and the shoe rides the ankle.
-        const hipX = dirSign * 0.1 * scale;
+        const hipX = dirSign * (0.1 + legSpread * 0.08) * scale;
         const lx = ped.x + hipX * cos;
         const lz = ped.z - hipX * sin;
-        const legAngle = -armSwing * 1.15;
+        const legAngle = -armSwing * 1.15 + legSpread * dirSign;
         dummy.position.set(lx, baseY + 0.78 * scale, lz);
         dummy.rotation.set(legAngle, yaw, 0);
         dummy.scale.set(scale, scale, scale);
@@ -560,16 +663,110 @@ export default class Pedestrians {
         this.shoes.setMatrixAt(L + side, dummy.matrix);
       }
 
-      // Contact shadow under the feet.
-      dummy.position.set(ped.x, ped.ground + 0.04, ped.z);
+      // Contact shadow under the feet: wide across the shoulders and darker where the soles meet
+      // the paving, which is what stops a figure reading as cut out and pasted on.
+      dummy.position.set(ped.x, ped.ground + 0.038, ped.z);
       dummy.rotation.set(0, yaw, 0);
-      dummy.scale.set(scale * 0.9, 1, scale * 0.9);
+      dummy.scale.set(scale * (pose === 'cross' ? 1.15 : 0.95), 1, scale * (pose === 'cross' ? 1.25 : 1.0));
       dummy.updateMatrix();
       this.shadows.setMatrixAt(i, dummy.matrix);
     }
 
-    for (const mesh of [this.torsos, this.hips, this.heads, this.hairs, this.arms, this.legs, this.shoes, this.shadows]) {
+    for (const mesh of [
+      this.torsos, this.hips, this.heads, this.hairs, this.arms, this.forearms, this.hands,
+      this.shoulders, this.legs, this.shoes, this.bags, this.caps, this.capBrims, this.towels,
+      this.shadows,
+    ]) {
       mesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  /**
+   * Write the current `dummy` matrix into every part slot for person `index`. Used by the dead and
+   * hidden branches, where the whole figure is one collapsed body rather than an articulated one.
+   */
+  parkAll(index, dummy) {
+    const L = index * 2;
+    this.torsos.setMatrixAt(index, dummy.matrix);
+    this.hips.setMatrixAt(index, dummy.matrix);
+    this.heads.setMatrixAt(index, dummy.matrix);
+    this.hairs.setMatrixAt(index, dummy.matrix);
+    this.arms.setMatrixAt(L, dummy.matrix);
+    this.arms.setMatrixAt(L + 1, dummy.matrix);
+    this.forearms.setMatrixAt(L, dummy.matrix);
+    this.forearms.setMatrixAt(L + 1, dummy.matrix);
+    this.hands.setMatrixAt(L, dummy.matrix);
+    this.hands.setMatrixAt(L + 1, dummy.matrix);
+    this.shoulders.setMatrixAt(L, dummy.matrix);
+    this.shoulders.setMatrixAt(L + 1, dummy.matrix);
+    this.legs.setMatrixAt(L, dummy.matrix);
+    this.legs.setMatrixAt(L + 1, dummy.matrix);
+    this.shoes.setMatrixAt(L, dummy.matrix);
+    this.shoes.setMatrixAt(L + 1, dummy.matrix);
+    this.bags.setMatrixAt(index, dummy.matrix);
+    this.caps.setMatrixAt(index, dummy.matrix);
+    this.capBrims.setMatrixAt(index, dummy.matrix);
+    this.towels.setMatrixAt(index, dummy.matrix);
+  }
+
+  /**
+   * Write one person's single accessory into its mesh slot, collapsing the other three. A bag
+   * hangs from the near hand at hip height, a cap sits on the crown with its brim forward, a towel
+   * is slung over the far shoulder and hangs down the back.
+   */
+  writeAccessory(index, accessory, ped, dummy, frame) {
+    const { scale, yaw, cos, sin, headY, pose } = frame;
+    const hide = (mesh) => {
+      dummy.position.set(0, -90, 0);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(0.001, 0.001, 0.001);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(index, dummy.matrix);
+    };
+    // A leaning or bent figure's bag swings forward of the hip.
+    const bagForward = pose === 'vendor' ? 0.3 : pose === 'shop' ? 0.1 : 0.06;
+    for (const [name, mesh] of [['bag', this.bags], ['cap', this.caps], ['towel', this.towels]]) {
+      if (accessory === name) continue;
+      hide(mesh);
+    }
+    if (accessory === 'bag') {
+      const side = 0.34 * scale;
+      dummy.position.set(ped.x + side * cos + bagForward * sin, frame.baseY + 0.62 * scale, ped.z - side * sin + bagForward * cos);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(scale, scale, scale);
+      dummy.updateMatrix();
+      this.bags.setMatrixAt(index, dummy.matrix);
+      hide(this.caps);
+      hide(this.capBrims);
+      hide(this.towels);
+    } else if (accessory === 'cap') {
+      dummy.position.set(ped.x + (pose === 'vendor' ? 0.22 * scale * sin : 0), headY + 0.1 * scale, ped.z + (pose === 'vendor' ? 0.22 * scale * cos : 0));
+      dummy.rotation.set(frame.torsoPitch * 0.5, yaw, 0);
+      dummy.scale.set(scale, scale, scale);
+      dummy.updateMatrix();
+      this.caps.setMatrixAt(index, dummy.matrix);
+      // The brim projects forward from the crown.
+      dummy.position.set(ped.x + (0.1 * sin) + (pose === 'vendor' ? 0.22 * scale * sin : 0), headY + 0.085 * scale, ped.z + (0.1 * cos) + (pose === 'vendor' ? 0.22 * scale * cos : 0));
+      dummy.rotation.set(frame.torsoPitch * 0.5, yaw, 0);
+      dummy.updateMatrix();
+      this.capBrims.setMatrixAt(index, dummy.matrix);
+      hide(this.bags);
+      hide(this.towels);
+    } else if (accessory === 'towel') {
+      const side = -0.24 * scale;
+      dummy.position.set(ped.x + side * cos, frame.baseY + 1.18 * scale, ped.z - side * sin);
+      dummy.rotation.set(0.12, yaw, 0.16);
+      dummy.scale.set(scale, scale, scale);
+      dummy.updateMatrix();
+      this.towels.setMatrixAt(index, dummy.matrix);
+      hide(this.bags);
+      hide(this.caps);
+      hide(this.capBrims);
+    } else {
+      hide(this.bags);
+      hide(this.caps);
+      hide(this.capBrims);
+      hide(this.towels);
     }
   }
 }

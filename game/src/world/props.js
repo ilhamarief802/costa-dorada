@@ -24,6 +24,116 @@ export default class Props {
     this.buildCafes();
     this.buildManholes();
     this.buildBlobShadows();
+    this.buildScooters();
+  }
+
+  /**
+   * Scooters, the way this town parks them: a step-through frame, two small wheels, a seat and a
+   * mirror, leaning on its stand at an angle to the kerb. A shot can hand in its own list (the
+   * leaning rider-stage scooters the rig places in camera space), and the street gets its own
+   * scatter on top.
+   */
+  buildScooters() {
+    const list = this.plan.scooters ?? [];
+    this.scooterGroup = new THREE.Group();
+    this.scooterGroup.name = 'scooters';
+    this.group.add(this.scooterGroup);
+    if (!list.length) return;
+
+    const bodyGeometry = new THREE.BoxGeometry(0.34, 0.34, 1.28);
+    bodyGeometry.translate(0, 0.6, 0);
+    const deckGeometry = new THREE.BoxGeometry(0.36, 0.1, 0.62);
+    deckGeometry.translate(0, 0.37, -0.08);
+    const wheelGeometry = new THREE.CylinderGeometry(0.24, 0.24, 0.12, 12);
+    wheelGeometry.rotateZ(Math.PI / 2);
+    const seatGeometry = new THREE.BoxGeometry(0.28, 0.1, 0.52);
+    seatGeometry.translate(0, 0.82, -0.18);
+    const barGeometry = new THREE.BoxGeometry(0.6, 0.05, 0.05);
+    barGeometry.translate(0, 0.98, 0.5);
+    const mirrorGeometry = new THREE.CylinderGeometry(0.014, 0.014, 0.24, 5);
+    mirrorGeometry.translate(0.26, 1.08, 0.5);
+    const shieldGeometry = new THREE.BoxGeometry(0.3, 0.44, 0.06);
+    shieldGeometry.translate(0, 0.9, 0.62);
+
+    const frameMaterial = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.5 });
+    const tyreMaterial = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.95 });
+    const chromeMaterial = new THREE.MeshStandardMaterial({ color: 0xb9b4a6, roughness: 0.25, metalness: 0.9 });
+    const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x2a3a44, roughness: 0.12, metalness: 0.6 });
+
+    const count = list.length;
+    const bodies = new THREE.InstancedMesh(bodyGeometry, frameMaterial, count);
+    const decks = new THREE.InstancedMesh(deckGeometry, frameMaterial, count);
+    const seats = new THREE.InstancedMesh(seatGeometry, tyreMaterial, count);
+    const bars = new THREE.InstancedMesh(barGeometry, chromeMaterial, count);
+    const mirrors = new THREE.InstancedMesh(mirrorGeometry, chromeMaterial, count);
+    const shields = new THREE.InstancedMesh(shieldGeometry, glassMaterial, count);
+    const wheels = new THREE.InstancedMesh(wheelGeometry, tyreMaterial, count * 2);
+    const shadows = new THREE.InstancedMesh(
+      (() => { const g = new THREE.PlaneGeometry(1, 1); g.rotateX(-Math.PI / 2); return g; })(),
+      new THREE.MeshBasicMaterial({ map: contactShadowTexture(), transparent: true, opacity: 0.55, depthWrite: false, color: 0x000000 }),
+      count,
+    );
+
+    const dummy = new THREE.Object3D();
+    const color = new THREE.Color();
+    list.forEach((scooter, index) => {
+      const ground = this.plan.heightAt(scooter.x, scooter.z);
+      const lean = scooter.lean ?? 0.2;
+      const place = (mesh, lift = 0) => {
+        dummy.position.set(scooter.x, ground + lift, scooter.z);
+        dummy.rotation.set(0, scooter.yaw, lean);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(index, dummy.matrix);
+      };
+      place(bodies);
+      place(decks);
+      place(seats);
+      place(bars);
+      place(mirrors);
+      place(shields);
+      // Two wheels, rolled forward of and behind the deck.
+      for (let side = 0; side < 2; side += 1) {
+        const along = side === 0 ? 0.58 : -0.62;
+        const fx = Math.sin(scooter.yaw) * along;
+        const fz = Math.cos(scooter.yaw) * along;
+        dummy.position.set(scooter.x + fx, ground + 0.24, scooter.z + fz);
+        dummy.rotation.set(0, scooter.yaw, lean);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        wheels.setMatrixAt(index * 2 + side, dummy.matrix);
+      }
+      // The contact sheet's rule: nothing floats. A scooter gets its own soft blob, rolled with it.
+      dummy.position.set(scooter.x, ground + 0.03, scooter.z);
+      dummy.rotation.set(0, scooter.yaw, 0);
+      dummy.scale.set(1.1, 1, 2.1);
+      dummy.updateMatrix();
+      shadows.setMatrixAt(index, dummy.matrix);
+      color.setHex(scooter.colour ?? 0xd9a441);
+      bodies.setColorAt(index, color);
+      decks.setColorAt(index, color);
+      seats.setColorAt(index, color);
+      shields.setColorAt(index, color);
+    });
+
+    for (const mesh of [bodies, decks, seats, bars, mirrors, shields, wheels, shadows]) {
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.frustumCulled = false;
+      mesh.castShadow = true;
+      this.scooterGroup.add(mesh);
+    }
+    for (const mesh of [bodies, decks, seats, shields]) {
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    }
+    shadows.renderOrder = 2;
+    shadows.castShadow = false;
+  }
+
+  /** Staging hook: a shot hands in its own scooters and they replace the street scatter. */
+  stageScooters(list) {
+    this.plan.scooters = list.map((scooter) => ({ ...scooter }));
+    if (this.scooterGroup) this.group.remove(this.scooterGroup);
+    this.buildScooters();
   }
 
   /** One instanced soft shadow sheet under every standing prop, so nothing floats. */

@@ -23,8 +23,8 @@ for (const name of names) {
   page.on('console', onConsole);
   page.on('pageerror', onError);
   const started = Date.now();
-  await page.goto(`http://localhost:8080/?shot=${name}&seed=1&capture=1`, { waitUntil: 'load', timeout: 180000 });
-  await page.waitForFunction('window.__SHOT_READY === true', null, { timeout: 180000 });
+  await page.goto(`http://localhost:8080/?shot=${name}&seed=1&capture=1`, { waitUntil: 'commit', timeout: 240000 });
+  await page.waitForFunction('window.__SHOT_READY === true', null, { timeout: 300000 });
   await page.waitForTimeout(240);
   const outfile = `${outDir}/${name}.jpg`;
   await page.screenshot({ path: outfile, type: 'jpeg', quality: 94 });

@@ -6,7 +6,7 @@
 import config from '../core/config.js';
 import Rng from '../core/rng.js';
 import { buildCar, buildWheel } from './carkit.js';
-import { contactShadowTexture } from '../core/assets.js';
+import { contactShadowTexture, glowTexture } from '../core/assets.js';
 
 const THREE = globalThis.THREE;
 
@@ -133,8 +133,8 @@ export default class Traffic {
       const kit = kits[kind];
       if (!list.length) continue;
       const paintMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0xffffff, roughness: 0.3, metalness: 0.5, clearcoat: 0.8, clearcoatRoughness: 0.12,
-        envMapIntensity: 1.0,
+        color: 0xffffff, roughness: 0.24, metalness: 0.5, clearcoat: 1, clearcoatRoughness: 0.05,
+        envMapIntensity: 1.8,
       });
       const paintMesh = new THREE.InstancedMesh(kit.paint, paintMaterial, list.length);
       paintMesh.castShadow = true;
@@ -149,7 +149,7 @@ export default class Traffic {
       this.paintMeshes[kind] = paintMesh;
 
       const trimMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0x1a1e23, roughness: 0.2, metalness: 0.8, clearcoat: 0.6,
+        color: 0x2f3945, roughness: 0.06, metalness: 0.94, clearcoat: 1, envMapIntensity: 2.6,
       });
       const trimMesh = new THREE.InstancedMesh(kit.trim, trimMaterial, list.length);
       trimMesh.castShadow = true;
@@ -200,6 +200,46 @@ export default class Traffic {
     this.shadows.renderOrder = 2;
     this.shadows.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.group.add(this.shadows);
+
+    // Brake-light bloom: one small additive card behind each car, lit only where a car is off the
+    // throttle. A still frame with no lit brake light on a slowing car reads as a parking lot, so
+    // this is what makes the jam read as traffic.
+    const glowGeometry = new THREE.PlaneGeometry(1, 1);
+    this.tailGlow = new THREE.InstancedMesh(
+      glowGeometry,
+      new THREE.MeshBasicMaterial({
+        map: glowTexture('rgba(255,64,32,0.85)', 'rgba(255,40,16,0)'),
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      }),
+      this.cars.length,
+    );
+    this.tailGlow.frustumCulled = false;
+    this.tailGlow.renderOrder = 3;
+    this.tailGlow.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.group.add(this.tailGlow);
+
+    // Exhaust haze: one soft additive puff per car slot, parked under the world unless the car is
+    // the one idling in the frame. Scaled to the model, so it reads as a plume, not a cloud.
+    this.exhaust = new THREE.InstancedMesh(
+      glowGeometry,
+      new THREE.MeshBasicMaterial({
+        map: glowTexture('rgba(206,198,182,0.5)', 'rgba(180,170,152,0)'),
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      }),
+      this.cars.length * 3,
+    );
+    this.exhaust.frustumCulled = false;
+    this.exhaust.renderOrder = 3;
+    this.exhaust.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.group.add(this.exhaust);
   }
 
   setPeriod(period) {
@@ -234,6 +274,7 @@ export default class Traffic {
       car.ground = this.plan.heightAt(car.x, car.z);
       car.speed = entry.speed ?? 0;
       car.braking = Boolean(entry.braking);
+      car.exhaust = Boolean(entry.exhaust);
       if (entry.colour !== undefined) {
         car.color = entry.colour;
         const mesh = this.paintMeshes[car.kind];
@@ -459,6 +500,8 @@ export default class Traffic {
         this.heads.setMatrixAt(i * 2 + 1, this.dummy.matrix);
         this.tails.setMatrixAt(i * 2, this.dummy.matrix);
         this.tails.setMatrixAt(i * 2 + 1, this.dummy.matrix);
+        this.tailGlow.setMatrixAt(i, this.dummy.matrix);
+        for (let puff = 0; puff < 3; puff += 1) this.exhaust.setMatrixAt(i * 3 + puff, this.dummy.matrix);
         continue;
       }
       const kit = this.kits[car.kind];
@@ -479,13 +522,51 @@ export default class Traffic {
       placeLamp(this.tails, i * 2, -0.6, kit.spec.tail + 0.02, lampY + 0.06);
       placeLamp(this.tails, i * 2 + 1, 0.6, kit.spec.tail + 0.02, lampY + 0.06);
 
-      // Shadow: body-length blob on the road.
+      // Shadow: body-length blob on the road, with the tyre contact darker than the skirt.
       const length = Math.abs(kit.spec.nose - kit.spec.tail) + 1.1;
       dummy.position.set(car.x, car.ground + 0.042, car.z);
       dummy.rotation.set(0, car.heading, 0);
       dummy.scale.set(2.6, 1, length);
       dummy.updateMatrix();
       this.shadows.setMatrixAt(i, dummy.matrix);
+
+      // Brake-light bloom: a small additive card hung just behind the tail lamps, present only on
+      // a car that is slowing. Off-throttle cars in a jam light up; cruising ones do not.
+      if (car.braking && !car.hidden) {
+        const back = kit.spec.tail - 0.24;
+        dummy.position.set(car.x + back * sin, car.ground + lampY + 0.06, car.z + back * cos);
+        dummy.rotation.set(0, car.heading, 0);
+        dummy.scale.set(1.5, 0.6, 1);
+        dummy.updateMatrix();
+      } else {
+        dummy.position.set(0, -60, 0);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(0.001, 0.001, 0.001);
+        dummy.updateMatrix();
+      }
+      this.tailGlow.setMatrixAt(i, dummy.matrix);
+
+      // Exhaust haze: three puffs stepped back from the tailpipe and drifting up, only on the car
+      // the rig marked as idling. Each puff is a little larger and fainter than the last.
+      for (let puff = 0; puff < 3; puff += 1) {
+        if (car.exhaust && !car.hidden) {
+          const back = kit.spec.tail - 0.35 - puff * 0.42;
+          dummy.position.set(
+            car.x + back * sin,
+            car.ground + 0.34 + puff * 0.2,
+            car.z + back * cos,
+          );
+          dummy.rotation.set(-Math.PI / 2, car.heading, 0);
+          const size = 0.9 + puff * 0.55;
+          dummy.scale.set(size, size, 1);
+        } else {
+          dummy.position.set(0, -60, 0);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.set(0.001, 0.001, 0.001);
+        }
+        dummy.updateMatrix();
+        this.exhaust.setMatrixAt(i * 3 + puff, dummy.matrix);
+      }
 
       const brakeGlow = car.braking ? 1 : 0.5;
       const r = this.night ? 0.9 : 0.5 * brakeGlow;
@@ -497,6 +578,8 @@ export default class Traffic {
     this.heads.instanceMatrix.needsUpdate = true;
     this.tails.instanceMatrix.needsUpdate = true;
     this.shadows.instanceMatrix.needsUpdate = true;
+    this.tailGlow.instanceMatrix.needsUpdate = true;
+    this.exhaust.instanceMatrix.needsUpdate = true;
     if (this.tails.instanceColor) this.tails.instanceColor.needsUpdate = true;
   }
 }

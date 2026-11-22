@@ -46,14 +46,14 @@ export default class Vehicle {
 
     const paint = THREE.MeshPhysicalMaterial
       ? new THREE.MeshPhysicalMaterial({
-        color: this.paint, roughness: 0.28, metalness: 0.62, clearcoat: 1, clearcoatRoughness: 0.06,
-        envMapIntensity: 1.15,
+        color: this.paint, roughness: 0.24, metalness: 0.5, clearcoat: 1, clearcoatRoughness: 0.04,
+        envMapIntensity: 1.9,
       })
-      : new THREE.MeshStandardMaterial({ color: this.paint, roughness: 0.26, metalness: 0.55 });
-    paint.envMap = null;
+      : new THREE.MeshStandardMaterial({ color: this.paint, roughness: 0.24, metalness: 0.5 });
+    // The scene's PMREM sky is the reflection; leave envMap unset so it is used.
     const trim = new THREE.MeshPhysicalMaterial({
-      color: 0x1b1f24, roughness: 0.22, metalness: 0.86, clearcoat: 0.7, clearcoatRoughness: 0.14,
-      envMapIntensity: 1.4,
+      color: 0x2c3640, roughness: 0.06, metalness: 0.94, clearcoat: 1, clearcoatRoughness: 0.02,
+      envMapIntensity: 2.6,
     });
     this.paintMaterial = paint;
 
@@ -213,6 +213,33 @@ export default class Vehicle {
     this.airV = 0;
     this.syncTransform();
     this.group.updateMatrixWorld(true);
+  }
+
+  /**
+   * A driver's arm out of the near window: upper arm through the glass, forearm along the sill and a
+   * hand on the door top. It is the cheapest way to make a parked hero car read as occupied, and
+   * because it hangs off `this.body` it turns and pitches with the car.
+   */
+  addDriverArm() {
+    if (this.driverArm) return;
+    const skin = new THREE.MeshStandardMaterial({ color: 0xc98d62, roughness: 0.82 });
+    const sleeve = new THREE.MeshStandardMaterial({ color: 0x3f6f86, roughness: 0.88 });
+    const cabin = (this.spec.cabin ?? [])[2] ?? { halfWidth: 0.72, top: this.spec.roof - 0.3 };
+    const side = 1;
+    const group = new THREE.Group();
+    group.name = 'driver-arm';
+    const upper = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.095, 0.3), sleeve);
+    upper.position.set(side * (cabin.halfWidth - 0.04), cabin.top - 0.26, 0.12);
+    group.add(upper);
+    const fore = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.3), skin);
+    fore.position.set(side * (cabin.halfWidth + 0.075), cabin.top - 0.22, 0.02);
+    fore.rotation.y = -0.26;
+    group.add(fore);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.055, 7, 6), skin);
+    hand.position.set(side * (cabin.halfWidth + 0.1), cabin.top - 0.23, 0.17);
+    group.add(hand);
+    this.body.add(group);
+    this.driverArm = group;
   }
 
   /**

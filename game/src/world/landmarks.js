@@ -46,11 +46,20 @@ export default class Landmarks {
     ];
     const mastMaterial = new THREE.MeshStandardMaterial({ color: 0xc4bdad, roughness: 0.6, metalness: 0.35 });
     for (const spot of spots) {
+      // A heavier mast in a pavement sleeve, so the pole reads as civic ironwork rather than a
+      // needle stuck into the asphalt.
       const height = spot.top - spot.base;
-      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.08, height, 6), mastMaterial);
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.11, height, 8), mastMaterial);
       mast.position.set(spot.x, spot.base + height / 2, spot.z);
       mast.castShadow = true;
       this.group.add(mast);
+      const sleeve = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.2, 0.26, 0.42, 10),
+        new THREE.MeshStandardMaterial({ color: 0x8f887c, roughness: 0.9 }),
+      );
+      sleeve.position.set(spot.x, spot.base + 0.21, spot.z);
+      sleeve.castShadow = true;
+      this.group.add(sleeve);
 
       const geometry = new THREE.PlaneGeometry(1.9, 1.15, 10, 4);
       geometry.translate(0.95, 0, 0);
@@ -62,6 +71,9 @@ export default class Landmarks {
       mesh.position.set(spot.x, spot.top - 0.75, spot.z);
       mesh.castShadow = true;
       this.group.add(mesh);
+      // The cloth hangs off the mast's own top, so a hoist that starts at the pole stays pinned as
+      // the wind moves the fly end.
+      mesh.rotation.y = 0.4 + spot.x * 0.01;
       this.flags.push({ mesh, base: geometry.attributes.position.array.slice(), phase: spot.x * 0.07 });
     }
   }
