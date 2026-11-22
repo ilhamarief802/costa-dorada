@@ -278,6 +278,7 @@ export default class Sky {
     } else {
       this.sunDir.set(-0.62, 0.185, 0.762).normalize();
     }
+    this.applySun();
     this.sun.color.set(look.sunColor);
     this.sun.intensity = look.sunIntensity;
     this.hemi.color.set(look.hemiSky);
@@ -299,6 +300,28 @@ export default class Sky {
       mesh.material.color.set(night ? 0x101a26 : 0xffffff);
       mesh.material.emissive.set(night ? 0x0a1018 : 0x000000);
     }
+  }
+
+  /**
+   * Point the sun at a given compass azimuth, keeping its configured elevation. The four shots are
+   * taken at four different times of the same evening, so each frame gets the sun its own clock
+   * would give it: low in the west for the cover, lower and further round for the chase, and gone
+   * behind the headland for the night frame. The rig calls this before staging a shot.
+   */
+  setSunAzimuth(azimuth, elevation) {
+    const useElevation = elevation ?? (this.period === 'night' ? 0.52 : 0.185);
+    this.sunDir.set(
+      Math.sin(azimuth) * Math.cos(useElevation),
+      Math.sin(useElevation),
+      Math.cos(azimuth) * Math.cos(useElevation),
+    ).normalize();
+    this.applySun();
+  }
+
+  /** Push `sunDir` into the shader and the water, after either period or azimuth changed it. */
+  applySun() {
+    this.uniforms.uSunDir.value.copy(this.sunDir);
+    if (this.plan && this.plan.waterUniforms) this.plan.waterUniforms.uSunDir.value.copy(this.sunDir);
   }
 
   update(dt, focus) {

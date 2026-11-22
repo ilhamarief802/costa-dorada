@@ -47,6 +47,13 @@ export function asphaltTexture() {
     const radius = 0.6 + random() * 1.8;
     context.fillRect(random() * size, random() * size, radius, radius);
   }
+  // A second, finer pass of aggregate: at the shot cameras' distance the first pass alone
+  // averages into flat grey, and the whole road reads as painted card.
+  for (let i = 0; i < 26000; i += 1) {
+    const shade = 44 + Math.floor(random() * 58);
+    context.fillStyle = `rgba(${shade},${shade},${shade + 2},${0.18 + random() * 0.34})`;
+    context.fillRect(random() * size, random() * size, 1, 1);
+  }
   for (let i = 0; i < 26; i += 1) {
     const x = random() * size;
     const y = random() * size;
@@ -71,7 +78,7 @@ export function asphaltTexture() {
     }
     context.stroke();
   }
-  signs.set('asphalt', texture(element, 64, 64));
+  signs.set('asphalt', texture(element, 132, 132));
   return signs.get('asphalt');
 }
 

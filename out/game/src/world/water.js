@@ -107,6 +107,9 @@ export default class Water {
     mesh.position.set(0, config.waterLevel, 340 + 450);
     this.group.add(mesh);
     this.mesh = mesh;
+    // The sky owns the sun; the water reads the same direction so the specular line and the sun
+    // disc always agree. The plan is the shared bus between the two.
+    this.plan.waterUniforms = this.material.uniforms;
 
     const underline = new THREE.Mesh(
       new THREE.PlaneGeometry(1700, 900),

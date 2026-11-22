@@ -59,6 +59,9 @@ try {
     viewport: { width: WIDTH, height: HEIGHT },
     deviceScaleFactor: 1,
   });
+  // The chase frame's shadow pass can run well past Playwright's 30 s screenshot default on
+  // software rasterisation; the frame is still valid, it is just slow.
+  page.setDefaultTimeout(readyTimeout);
 
   for (const frame of FRAMES) {
     const messages = [];
@@ -88,7 +91,7 @@ try {
 
       let written = null;
       for (const quality of QUALITIES) {
-        const buffer = await page.screenshot({ type: 'jpeg', quality });
+        const buffer = await page.screenshot({ type: 'jpeg', quality, timeout: readyTimeout });
         if (buffer.length <= MAX_BYTES) {
           const path = join(outDir, frame.file);
           writeFileSync(path, buffer);

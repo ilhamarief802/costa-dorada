@@ -610,6 +610,7 @@ const game = {
   gulls,
   weather,
   sky: weatherSky,
+  water,
   rig,
   hud,
   menus,

@@ -104,24 +104,31 @@ export default class Palms {
     const euler = new THREE.Euler();
     this.plan.palms.forEach((palm, index) => {
       const ground = this.plan.heightAt(palm.x, palm.z);
-      const height = 5.4 * palm.scale + (palm.kind === 'beach' ? 0.6 : 0);
-      euler.set(palm.lean, palm.yaw, palm.lean * 0.4, 'YXZ');
+      // No two palms in a row are the same tree: height, girth, lean and crown size each carry a
+      // deterministic variation off the index, so a boulevard reads as a line of palms rather than
+      // one model stamped down the kerb.
+      const wobble = Math.sin(index * 2.399) * 0.5 + Math.sin(index * 5.7) * 0.2;
+      const height = (5.4 + wobble * 0.9) * palm.scale + (palm.kind === 'beach' ? 0.6 : 0);
+      const girth = palm.scale * (0.86 + wobble * 0.16);
+      const lean = (palm.lean ?? 0) + wobble * 0.055;
+      euler.set(lean, palm.yaw, lean * 0.4, 'YXZ');
       quaternion.setFromEuler(euler);
       dummy.position.set(palm.x, ground, palm.z);
       dummy.quaternion.copy(quaternion);
-      dummy.scale.set(palm.scale, height, palm.scale);
+      dummy.scale.set(girth, height, girth);
       dummy.updateMatrix();
       trunks.setMatrixAt(index, dummy.matrix);
 
       up.set(0, height, 0).applyQuaternion(quaternion);
       crownDummy.position.set(palm.x + up.x, ground + up.y, palm.z + up.z);
-      crownDummy.quaternion.copy(quaternion);
-      const crownScale = palm.scale * (palm.kind === 'beach' ? 1.2 : 1.05);
-      crownDummy.scale.set(crownScale, crownScale * 0.9, crownScale);
+      // Each crown gets its own roll and spin so the fronds do not line up.
+      crownDummy.rotation.set(wobble * 0.12, palm.yaw * 0.6 + index * 0.37, wobble * 0.16);
+      const crownScale = girth * (palm.kind === 'beach' ? 1.24 : 1.02) * (0.94 + wobble * 0.1);
+      crownDummy.scale.set(crownScale, crownScale * (0.86 + wobble * 0.12), crownScale);
       crownDummy.updateMatrix();
       crowns.setMatrixAt(index, crownDummy.matrix);
       boots.setMatrixAt(index, crownDummy.matrix);
-      color.setHSL(0.23 + ((index * 13) % 10) * 0.004, 0.34, 0.52);
+      color.setHSL(0.23 + ((index * 13) % 10) * 0.004 + wobble * 0.012, 0.34, 0.52 + wobble * 0.06);
       crowns.setColorAt(index, color);
     });
     trunks.instanceMatrix.needsUpdate = true;

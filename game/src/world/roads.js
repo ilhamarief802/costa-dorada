@@ -19,6 +19,7 @@ export default class Roads {
     this.group = new THREE.Group();
     this.group.name = 'roads';
     this.buildPlate();
+    this.buildWear();
     this.buildPaint();
   }
 
@@ -46,6 +47,74 @@ export default class Roads {
     this.plate = plate;
     // Weather reads this to change the gloss at night; the plan is the shared data bus.
     this.plan.roadMaterial = material;
+  }
+
+  /**
+   * The asphalt is never a flat colour in life: each lane carries two darker bands where the
+   * tyres polish the aggregate, and the strip beside the kerb is darker still where grit and
+   * water collect. One merged, vertex-coloured sheet — two triangles per band — so the cost is a
+   * single extra draw call for the whole city.
+   */
+  buildWear() {
+    const half = 338;
+    const wear = [];
+    // Wheel tracks: 0.78 m either side of each lane centre, two lanes each way.
+    const laneCentres = [1.575, 4.725, -1.575, -4.725];
+    const tracks = [];
+    for (const lane of laneCentres) {
+      tracks.push(lane - 0.78, lane + 0.78);
+    }
+    const centers = [];
+    for (let i = 0; i < 8; i += 1) centers.push((i - 3.5) * config.pitch);
+    const addStrip = (x, z, width, length, color) => {
+      wear.push({ x, z, width, length, color });
+    };
+    for (const center of centers) {
+      // Tyre polish down every lane, both axes.
+      for (const track of tracks) {
+        addStrip(center + track, 0, 0.44, half * 2, 0x34343a);
+        addStrip(0, center + track, half * 2, 0.44, 0x34343a);
+      }
+      // A darker, grittier band where the tarmac meets the kerb.
+      for (const side of [-1, 1]) {
+        addStrip(center + side * 8.52, 0, 0.9, half * 2, 0x232327);
+        addStrip(0, center + side * 8.52, half * 2, 0.9, 0x232327);
+      }
+    }
+    if (!wear.length) return;
+    const positions = [];
+    const normals = [];
+    const colors = [];
+    const color = new THREE.Color();
+    for (const strip of wear) {
+      const hw = strip.width / 2;
+      const hl = strip.length / 2;
+      const x0 = strip.x - hw;
+      const x1 = strip.x + hw;
+      const z0 = strip.z - hl;
+      const z1 = strip.z + hl;
+      const y = 0.0235;
+      const quad = [
+        x0, y, z0, x1, y, z0, x1, y, z1,
+        x0, y, z0, x1, y, z1, x0, y, z1,
+      ];
+      positions.push(...quad);
+      for (let i = 0; i < 6; i += 1) normals.push(0, 1, 0);
+      color.setHex(strip.color);
+      for (let i = 0; i < 6; i += 1) colors.push(color.r, color.g, color.b);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    const material = new THREE.MeshBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.34, depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.renderOrder = 1;
+    mesh.receiveShadow = true;
+    this.group.add(mesh);
+    this.wear = mesh;
   }
 
   buildPaint() {

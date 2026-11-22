@@ -1,6 +1,22 @@
 [
-  { "name": "1-cover.jpg", "query": "?shot=cover&seed=1&capture=1" },
-  { "name": "2-chase.jpg", "query": "?shot=chase&seed=1&capture=1" },
-  { "name": "3-mission.jpg", "query": "?shot=mission&seed=1&capture=1" },
-  { "name": "4-night.jpg", "query": "?shot=night&seed=1&capture=1" }
+  {
+    "name": "1-cover.jpg",
+    "query": "?shot=cover&seed=1&capture=1",
+    "description": "Golden hour on the Playa Dorada avenue: the hero coupe parked in the lower third with the driver's arm on the sill, the character leaning a clear step off its flank, pedestrians on both pavements and traffic receding down the middle distance."
+  },
+  {
+    "name": "2-chase.jpg",
+    "query": "?shot=chase&seed=1&capture=1",
+    "description": "A four-star pursuit seen from the kerb: the hero coupe running down the avenue, three cruisers closing around it, the helicopter's searchlight over the rooftops, and two police trucks nose-to-nose with a striped barrier across the junction ahead."
+  },
+  {
+    "name": "3-mission.jpg",
+    "query": "?shot=mission&seed=1&capture=1",
+    "description": "The marina fish market during a firefight: the player aiming a pistol in the lower third, the crew and stall-holders scattered between the stalls, boats and gulls behind them."
+  },
+  {
+    "name": "4-night.jpg",
+    "query": "?shot=night&seed=1&capture=1",
+    "description": "The same avenue after dark: the hero coupe under a lamp pool, neon blades on both facades, and lit towers stepping back into the sea fog."
+  }
 ]

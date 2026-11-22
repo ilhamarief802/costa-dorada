@@ -34,7 +34,7 @@ const SHOTS = {
     sun: 0.94,
     clock: '19:38',
     car: { x: 40.2, z: 325.4, yaw: 0.14 },
-    player: { x: 41.36, z: 326.32, yaw: 0.30, lean: true },
+    player: { x: 42.8, z: 326.44, yaw: 0.30, lean: true },
     district: 'PLAYA DORADA',
     chapter: ['CHAPTER I', 'SUNSET RUN', 'Meet Rafa at the marina before sundown.'],
   },
@@ -252,9 +252,10 @@ function stageTraffic(shot, name, game) {
     // Right beside the lens: a car pulling out, close enough to read its paint and its driver.
     push(5.4, -4.6, Math.PI * 0.86, 'coupe', 0x2f6f7a, { brake: true });
     push(7.6, 5.2, 0.08, 'van', 0xe6dcc8, { exhaust: true });
-    // The far side of the junction: more cars, smaller, closing the depth band.
-    push(39.0, -7.8, Math.PI * 0.95, 'sedan', 0x2f6f7a);
-    push(46.0, -4.2, Math.PI, 'van', 0xe6dcc8);
+    // The far side of the junction: more cars, smaller, closing the depth band. Kept clear of the
+    // roadblock's own footprint (forward 40 to 44 m) so nothing intersections the trucks.
+    push(34.5, -7.8, Math.PI * 0.95, 'sedan', 0x2f6f7a);
+    push(48.5, -4.2, Math.PI, 'van', 0xe6dcc8);
     push(52.0, 6.8, 0.0, 'sedan', 0xb8443b);
     push(60.0, 1.4, Math.PI, 'coupe', 0xd9a441);
     // A parked scooter leaning into a turn on the near kerb, the way they sit in this town.
@@ -319,34 +320,48 @@ function stageCrowd(shot, name, game) {
   // People, in camera space. Every one gets a distinct phase so no two are mid-step alike, a
   // distinct height and shirt, and one accessory.
   const ACCESSORIES = ['bag', 'cap', 'towel', 'bag', 'cap'];
-  const SHIRTS = [0xc75b4a, 0x3f6f86, 0xd8a95a, 0x5b7d58, 0x8b5a7a, 0xe8e0cf, 0xd97b4a, 0x384b5e, 0xf0d14e, 0x6f8f96];
+  // Warm/cool alternation, so neighbouring figures separate at a glance even in the golden haze.
+  const SHIRTS = [0xc75b4a, 0x3f6f86, 0xd8a95a, 0xe8e0cf, 0x4f7a52, 0x8b5a7a, 0xe07a3c, 0x2f4356, 0xf0d14e, 0x6f8f96];
+  // Three deliberate body heights, cycled rather than jittered, so the crowd has real variety
+  // instead of a continuum of near-identical averages.
+  const HEIGHTS = [0.9, 1.0, 1.1];
+  // The gesture set: stride, weight-on-one-leg, phone, bag, wall lean. Cycled so a row of people
+  // never repeats a silhouette twice in a row.
+  const POSES = ['walk', 'standing', 'phone', 'bag', 'lean', 'walk', 'standing', 'phone'];
+  let poseCursor = 0;
   let personIndex = 0;
   const stand = (forward, lateral, opts = {}) => {
     const point = at(cam, target, forward, lateral);
-    const turn = opts.turn ?? rng.float(-0.35, 0.35);
+    // Every staged person is turned 10 to 40 degrees off the lens: three-quarter, never a
+    // passport photo and never a flat cardboard cut-out.
+    const magnitude = Math.abs(opts.turn ?? rng.float(0.18, 0.7));
+    const turn = (opts.sign ?? (rng.chance(0.5) ? 1 : -1)) * Math.min(0.7, Math.max(0.18, magnitude));
     const yaw = opts.yaw ?? (facing(cam, point) + turn);
+    const pose = opts.pose ?? POSES[poseCursor++ % POSES.length];
     entries.push({
       x: point.x,
       z: point.z,
       yaw,
       walk: opts.walk ?? rng.float(0.95, 1.4),
       phase: opts.phase ?? rng.float(0, Math.PI * 2),
-      scale: opts.scale ?? rng.float(0.9, 1.09),
+      scale: opts.scale ?? HEIGHTS[personIndex % HEIGHTS.length],
       shirt: SHIRTS[personIndex % SHIRTS.length],
-      accessory: ACCESSORIES[personIndex % ACCESSORIES.length],
-      pose: opts.pose ?? 'walk',
+      accessory: pose === 'bag' ? 'bag' : ACCESSORIES[personIndex % ACCESSORIES.length],
+      pose,
     });
     personIndex += 1;
   };
   const cross = (forward, lateral, opts = {}) => {
     const point = at(cam, target, forward, lateral);
+    const magnitude = Math.abs(opts.turn ?? rng.float(0.2, 0.62));
+    const turn = (opts.sign ?? (rng.chance(0.5) ? 1 : -1)) * Math.min(0.68, Math.max(0.18, magnitude));
     entries.push({
       x: point.x,
       z: point.z,
-      yaw: opts.yaw ?? Math.PI * 0.5 + rng.float(-0.12, 0.12),
+      yaw: facing(cam, point) + turn,
       walk: 1.5,
       phase: opts.phase ?? Math.PI * 0.5,
-      scale: opts.scale ?? rng.float(0.92, 1.06),
+      scale: opts.scale ?? HEIGHTS[personIndex % HEIGHTS.length],
       shirt: SHIRTS[personIndex % SHIRTS.length],
       accessory: ACCESSORIES[personIndex % ACCESSORIES.length],
       pose: 'cross',
@@ -357,17 +372,18 @@ function stageCrowd(shot, name, game) {
   if (name === 'chase') {
     // Bystanders pinned against the shopfronts as the chase tears past, plus two stepping off the
     // kerb into the road to get out of the way of it.
-    for (let i = 0; i < 9; i += 1) stand(13 + i * 2.6, i % 2 === 0 ? -10.4 : 10.8, { turn: rng.float(-0.5, 0.5) });
+    for (let i = 0; i < 9; i += 1) stand(13 + i * 2.6, i % 2 === 0 ? -10.4 : 10.8);
     cross(20.0, -2.2, { phase: 0.2 });
     cross(24.5, 3.1, { phase: 2.6 });
-    stand(10.4, -8.9, { walk: 0.2, pose: 'vendor', turn: 0.1 });
-    stand(9.0, 9.6, { walk: 0.2, pose: 'shop' });
+    stand(10.4, -8.9, { walk: 0.2, pose: 'vendor', turn: 0.22 });
+    stand(9.0, 9.6, { walk: 0.2, pose: 'shop', turn: 0.3 });
+    stand(14.5, -11.4, { pose: 'lean', turn: 0.34 });
     // Two right at the lens on the near pavement, close enough to read.
     stand(4.6, -7.2, { turn: 0.3 });
-    stand(5.8, -9.4, { turn: -0.4, pose: 'shop' });
-    stand(6.2, 8.4, { turn: 0.15 });
-    stand(30.0, -9.2, { yaw: Math.PI * 0.15 });
-    stand(36.0, 9.8, { yaw: -Math.PI * 0.1 });
+    stand(5.8, -9.4, { turn: 0.4, pose: 'phone' });
+    stand(6.2, 8.4, { turn: 0.26 });
+    stand(30.0, -9.2);
+    stand(36.0, 9.8);
   } else if (name === 'mission') {
     // Fish market: dock hands and buyers around the stalls, a couple breaking away, the vendor
     // bent over his cart, a woman with a towel over her shoulder.
@@ -375,18 +391,18 @@ function stageCrowd(shot, name, game) {
       const angle = 0.42 + (i / 12) * Math.PI * 1.5;
       const forward = 12 + Math.cos(angle) * 7.5;
       const lateral = Math.sin(angle) * 8.5;
-      stand(forward, lateral, { turn: rng.float(-0.55, 0.55) });
+      stand(forward, lateral);
     }
-    stand(11.2, -3.2, { walk: 0.15, pose: 'vendor', turn: 0.0 });
-    stand(12.6, 4.6, { walk: 0.2, pose: 'shop', turn: 0.1 });
+    stand(11.2, -3.2, { walk: 0.15, pose: 'vendor', turn: 0.24 });
+    stand(12.6, 4.6, { walk: 0.2, pose: 'shop', turn: 0.3 });
     cross(14.0, -8.4, { phase: 1.1 });
     cross(16.2, 8.9, { phase: 3.4 });
-    stand(20.0, -10.2, { yaw: Math.PI * 0.6 });
-    stand(26.0, 10.4, { yaw: -Math.PI * 0.5 });
-    stand(9.4, 6.4, { walk: 0.3, pose: 'argue' });
+    stand(20.0, -10.2, { pose: 'lean' });
+    stand(26.0, 10.4);
+    stand(9.4, 6.4, { walk: 0.3, pose: 'argue', turn: 0.3 });
     // Buyers right at the lens, one haggling over the cart, one walking away with a bag.
     stand(4.8, 3.6, { turn: 0.2 });
-    stand(6.0, -4.4, { turn: -0.3, pose: 'shop' });
+    stand(6.0, -4.4, { turn: 0.3, pose: 'phone' });
     stand(5.4, 7.6, { turn: 0.35 });
   } else {
     // Both pavements of the avenue, plus a knot striding across the crossing. Nothing is placed
@@ -400,21 +416,24 @@ function stageCrowd(shot, name, game) {
     };
     for (let i = 0; i < 20; i += 1) {
       const side = i % 2 === 0 ? -1 : 1;
-      tryStand(9 + (i >> 1) * 2.8, side * 10.6 + rng.float(-1.2, 1.2), { turn: rng.float(-0.45, 0.45) });
+      tryStand(9 + (i >> 1) * 2.8, side * 10.6 + rng.float(-1.2, 1.2));
     }
     // The two mid-crossing: on the zebra, legs apart, torsos turned.
     cross(16.5, -5.4, { phase: 0.35 });
     cross(18.4, 1.8, { phase: 2.9 });
     // A vendor bent over his cart on the near kerb.
-    tryStand(9.6, -9.2, { walk: 0.15, pose: 'vendor', turn: 0.05 });
+    tryStand(9.6, -9.2, { walk: 0.15, pose: 'vendor', turn: 0.24 });
     // A shopkeeper leaning in a doorway across the street.
-    tryStand(10.8, 9.8, { walk: 0.2, pose: 'shop', turn: -0.1 });
+    tryStand(10.8, 9.8, { walk: 0.2, pose: 'shop', turn: 0.3 });
+    // A couple leaning on the shopfront walls.
+    tryStand(12.4, -11.5, { pose: 'lean', turn: 0.32 });
+    tryStand(15.2, 11.3, { pose: 'lean', turn: 0.36, sign: -1 });
     // Three right at the lens so the near layer is populated, not just the kerb.
     tryStand(5.0, -7.4, { turn: 0.25 });
-    tryStand(6.4, -9.8, { turn: -0.35 });
-    tryStand(5.6, 8.6, { turn: 0.15, pose: 'shop' });
+    tryStand(6.4, -9.8, { turn: 0.35, pose: 'phone' });
+    tryStand(5.6, 8.6, { turn: 0.22, pose: 'bag' });
     for (let i = 0; i < 6; i += 1) {
-      tryStand(28 + i * 3.1, rng.chance(0.5) ? -9.8 : 10.2, { turn: rng.float(-0.4, 0.4) });
+      tryStand(28 + i * 3.1, rng.chance(0.5) ? -9.8 : 10.2);
     }
   }
 

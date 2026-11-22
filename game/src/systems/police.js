@@ -81,6 +81,87 @@ function buildCruiser() {
   return { group, redMaterial, blueMaterial, lamp };
 }
 
+/**
+ * A police box truck for roadblocks: a cab-over cab, a tall cargo body, a light bar and a
+ * ground-hugging blob shadow. Built from the same materials as a cruiser so the two read as one
+ * force; the nose points along local +Z, the way every vehicle in the game does.
+ */
+function buildTruck() {
+  const group = new THREE.Group();
+  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xece9df, roughness: 0.42, metalness: 0.22 });
+  const stripeMaterial = new THREE.MeshStandardMaterial({ color: 0x1a3f74, roughness: 0.48, metalness: 0.2 });
+  const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x121b22, roughness: 0.1, metalness: 0.7 });
+  const tyreMaterial = new THREE.MeshStandardMaterial({ color: 0x121212, roughness: 0.95 });
+  const chromeMaterial = new THREE.MeshStandardMaterial({ color: 0xc6c1b4, roughness: 0.25, metalness: 0.85 });
+
+  const chassis = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.28, 6.3), stripeMaterial);
+  chassis.position.set(0, 0.62, 0);
+  group.add(chassis);
+
+  const cargo = new THREE.Mesh(new THREE.BoxGeometry(2.34, 2.4, 4.45), bodyMaterial);
+  cargo.position.set(0, 1.92, -1.0);
+  cargo.castShadow = true;
+  cargo.receiveShadow = true;
+  group.add(cargo);
+
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(2.24, 1.62, 2.1), bodyMaterial);
+  cab.position.set(0, 1.5, 2.06);
+  cab.castShadow = true;
+  group.add(cab);
+
+  const windscreen = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.72, 0.08), glassMaterial);
+  windscreen.position.set(0, 1.78, 3.1);
+  group.add(windscreen);
+
+  const band = new THREE.Mesh(new THREE.BoxGeometry(2.38, 0.42, 4.5), stripeMaterial);
+  band.position.set(0, 1.28, -1.0);
+  group.add(band);
+
+  const grille = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.4, 0.1), chromeMaterial);
+  grille.position.set(0, 0.95, 3.12);
+  group.add(grille);
+
+  const wheelGeometry = new THREE.CylinderGeometry(0.46, 0.46, 0.32, 12);
+  wheelGeometry.rotateZ(Math.PI / 2);
+  for (const sx of [-1.02, 1.02]) {
+    for (const sz of [-2.15, 2.1]) {
+      const wheel = new THREE.Mesh(wheelGeometry, tyreMaterial);
+      wheel.position.set(sx, 0.46, sz);
+      wheel.castShadow = true;
+      group.add(wheel);
+    }
+  }
+
+  // Light bar on the cab roof.
+  const redMaterial = new THREE.MeshBasicMaterial({ color: 0xff2a1e, toneMapped: false });
+  const blueMaterial = new THREE.MeshBasicMaterial({ color: 0x2a5dff, toneMapped: false });
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.1, 0.26), new THREE.MeshStandardMaterial({ color: 0x1b1e22, roughness: 0.6 }));
+  bar.position.set(0, 2.36, 2.2);
+  group.add(bar);
+  const red = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.14, 0.28), redMaterial);
+  red.position.set(-0.4, 2.43, 2.2);
+  const blue = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.14, 0.28), blueMaterial);
+  blue.position.set(0.4, 2.43, 2.2);
+  group.add(red, blue);
+
+  const lamp = new THREE.SpotLight(0xbfd4ff, 0, 50, 0.55, 0.6, 1.4);
+  lamp.position.set(0, 1.4, 3.0);
+  lamp.target.position.set(0, 0, 16);
+  group.add(lamp, lamp.target);
+
+  // Tyre contact shadow, laid 4 cm above the road plate so it never z-fights the tarmac.
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.4, 7.4),
+    new THREE.MeshBasicMaterial({ map: contactShadowTexture(), transparent: true, opacity: 0.82, depthWrite: false, color: 0x000000 }),
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.04;
+  shadow.renderOrder = 2;
+  group.add(shadow);
+
+  return { group, redMaterial, blueMaterial, lamp };
+}
+
 export default class Police {
   constructor({ plan, scene, player, vehicle, traffic, hud, events, state, seed }) {
     this.plan = plan;
@@ -180,10 +261,14 @@ export default class Police {
   dismantle() {
     for (const cruiser of this.cruisers) this.group.remove(cruiser.group);
     this.cruisers.length = 0;
-    for (const block of this.roadblocks) this.group.remove(block);
-    this.roadblocks.length = 0;
+    this.clearRoadblocks();
     if (this.helicopter) this.helicopter.group.visible = false;
     this.stopSiren();
+  }
+
+  clearRoadblocks() {
+    for (const block of this.roadblocks) this.group.remove(block.group);
+    this.roadblocks.length = 0;
   }
 
   spawnCruiser(x, z, yaw, parked = false) {
@@ -406,28 +491,34 @@ export default class Police {
     void ctx;
   }
 
-  spawnRoadblock(playerPos) {
-    const forward = this.vehicle.occupied ? { x: Math.sin(this.vehicle.yaw), z: Math.cos(this.vehicle.yaw) } : { x: 0, z: 1 };
-    const centerX = playerPos.x + forward.x * 78;
-    const centerZ = playerPos.z + forward.z * 78;
-    const across = Math.abs(forward.x) > Math.abs(forward.z);
-    const yaw = across ? Math.PI / 2 : 0;
-    const offsetX = across ? 0 : 4.6;
-    const offsetZ = across ? 4.6 : 0;
+  /**
+   * Two police trucks nose-to-nose across the carriageway, a striped barrier bar spanning the gap
+   * between their front bumpers, and a cone line in front. Everything is seated on
+   * `plan.heightAt` so no part of the block hovers, and the whole assembly is built at an explicit
+   * centre so a shot can place it without the simulation ever moving it.
+   */
+  buildRoadblock(centerX, centerZ, axis = 'x') {
+    const ground = this.plan.heightAt(centerX, centerZ);
     const group = new THREE.Group();
+    group.name = 'roadblock';
+    // Built around its own centre and then placed, so the same block can close a north-south road
+    // (axis 'x', trucks facing each other across world X) or an east-west one (axis 'z').
+    group.position.set(centerX, ground, centerZ);
+    group.rotation.y = axis === 'z' ? Math.PI / 2 : 0;
     const cruisers = [];
+    // Half-gap between the trucks' noses, measured along the road's cross axis (world X).
+    const NOSE_GAP = 2.9;
+    const TRUCK_X = NOSE_GAP / 2 + 3.2;
     for (const sign of [-1, 1]) {
-      const x = centerX + offsetX * sign;
-      const z = centerZ + offsetZ * sign;
-      const colliders = this.plan.queryColliders(x, z, 2.4, []);
-      if (colliders.some((box) => box.kind === 'building')) continue;
-      const model = buildCruiser();
+      const model = buildTruck();
+      const x = TRUCK_X * sign;
       const cruiser = {
         ...model,
-        pos: new THREE.Vector3(x, this.plan.heightAt(x, z), z),
-        yaw: yaw + Math.PI / 2,
+        pos: new THREE.Vector3(x, 0, 0),
+        // Nose points at the other truck: +X for the west truck, -X for the east one.
+        yaw: sign < 0 ? Math.PI / 2 : -Math.PI / 2,
         speed: 0,
-        hp: 180,
+        hp: 240,
         alive: true,
         parked: true,
         fireTimer: this.rng.float(0.5, 1.4),
@@ -436,17 +527,44 @@ export default class Police {
       };
       cruiser.group.position.copy(cruiser.pos);
       cruiser.group.rotation.y = cruiser.yaw;
-      this.group.add(cruiser.group);
+      group.add(cruiser.group);
       cruisers.push(cruiser);
     }
+
+    // The bar itself: alternating red/white panels on two steel posts, feet flat on the road.
+    const panelMaterials = [
+      new THREE.MeshStandardMaterial({ color: 0xc22d21, roughness: 0.55, emissive: 0x2a0603, emissiveIntensity: 0.6 }),
+      new THREE.MeshStandardMaterial({ color: 0xf2efe4, roughness: 0.5, emissive: 0x2a2820, emissiveIntensity: 0.35 }),
+    ];
+    const span = NOSE_GAP + 0.4;
+    const panels = 7;
+    for (let i = 0; i < panels; i += 1) {
+      const panel = new THREE.Mesh(
+        new THREE.BoxGeometry(span / panels, 0.34, 0.14),
+        panelMaterials[i % 2],
+      );
+      panel.position.set(-span / 2 + (i + 0.5) * (span / panels), 1.0, 0);
+      panel.castShadow = true;
+      group.add(panel);
+    }
+    const postMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.6, metalness: 0.5 });
+    const footMaterial = new THREE.MeshStandardMaterial({ color: 0x23272a, roughness: 0.9 });
+    for (const sign of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.0, 0.1), postMaterial);
+      post.position.set(sign * (span / 2 - 0.06), 0.5, 0);
+      group.add(post);
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.07, 0.5), footMaterial);
+      foot.position.set(sign * (span / 2 - 0.06), 0.035, 0);
+      group.add(foot);
+    }
+
+    // Cones on the near side of the block, so the closure reads before the trucks do.
     const lights = [];
     const cones = [];
+    const coneMaterial = new THREE.MeshStandardMaterial({ color: 0xe4581f, roughness: 0.8 });
     for (let i = -3; i <= 3; i += 1) {
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(0.22, 0.62, 8),
-        new THREE.MeshStandardMaterial({ color: 0xe4581f, roughness: 0.8 }),
-      );
-      cone.position.set(centerX + (across ? i * 1.5 : (i % 2) * 0.4), this.plan.heightAt(centerX, centerZ) + 0.31, centerZ + (across ? (i % 2) * 0.4 : i * 1.5));
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.62, 8), coneMaterial);
+      cone.position.set(i * 1.55, 0.31, 4.2);
       group.add(cone);
       cones.push(cone);
       if (i % 2 === 0) {
@@ -456,8 +574,23 @@ export default class Police {
         lights.push(lamp);
       }
     }
+
+    const block = { group, cruisers, lights, cones, phase: this.rng.float(0, 6), pos: new THREE.Vector3(centerX, 0, centerZ) };
     this.group.add(group);
-    this.roadblocks.push({ group, cruisers, lights, cones, phase: this.rng.float(0, 6), pos: new THREE.Vector3(centerX, 0, centerZ) });
+    return block;
+  }
+
+  spawnRoadblock(playerPos) {
+    const forward = this.vehicle.occupied ? { x: Math.sin(this.vehicle.yaw), z: Math.cos(this.vehicle.yaw) } : { x: 0, z: 1 };
+    const centerX = playerPos.x + forward.x * 78;
+    const centerZ = playerPos.z + forward.z * 78;
+    // The block is laid across the road the player is on, centred on that road's own centre line,
+    // and kept inside the city so a player near the promenade is not given a block in the sea.
+    const northSouth = Math.abs(forward.x) < Math.abs(forward.z);
+    const x = northSouth ? this.nearestRoad(centerX, 'x') : clamp(centerX, -config.cityHalf + 8, config.cityHalf - 8);
+    const z = northSouth ? clamp(centerZ, -config.cityHalf + 8, config.cityHalf - 8) : this.nearestRoad(centerZ, 'z');
+    const block = this.buildRoadblock(x, z, northSouth ? 'x' : 'z');
+    this.roadblocks.push(block);
     this.events.emit('roadblock');
   }
 
@@ -606,15 +739,30 @@ export default class Police {
   stageChase(playerPos) {
     this.setWanted(4, true);
     this.losVisible = true;
+    // setWanted has already spawned chase cruisers off-screen; remove those groups from the
+    // scene as well as the array, or they stay behind as orphaned grey bodies on the road.
+    for (const cruiser of this.cruisers) this.group.remove(cruiser.group);
     this.cruisers.length = 0;
-    // Absolute poses relative to the hero so the pack is always packed into the same window:
-    // one close on the left, one slewed broadside, one further back filling the lane.
+    // Absolute poses relative to the hero: a left flanker level with the door, a broadside car
+    // slewed across the near lane, and a third filling the lane behind the hero. Every one sits
+    // *ahead* of the camera (lower Z) — a cruiser parked on the lens would fill the frame with
+    // a grey slab and intersect the near plane.
     const ring = [
-      [playerPos.x - 3.6, playerPos.z + 8.4, Math.PI + 0.12],
-      [playerPos.x + 3.4, playerPos.z + 11.2, Math.PI - 1.18],
-      [playerPos.x - 0.6, playerPos.z + 17.4, Math.PI + 0.24],
+      [playerPos.x - 3.2, playerPos.z - 2.5, Math.PI + 0.12],
+      [playerPos.x + 3.5, playerPos.z - 1.0, Math.PI - 1.18],
+      [playerPos.x - 0.4, playerPos.z - 6.5, Math.PI + 0.24],
     ];
     for (const [x, z, yaw] of ring) this.spawnCruiser(x, z, yaw);
+    // The roadblock the hero is running into, 33 m down the avenue: two trucks nose-to-nose with
+    // a striped barrier between them, parked across the lane.
+    this.clearRoadblocks();
+    const block = this.buildRoadblock(this.nearestRoad(playerPos.x, 'x'), playerPos.z - 33, 'x');
+    for (const truck of block.cruisers) {
+      truck.redMaterial.color.setHex(0xff2e22);
+      truck.blueMaterial.color.setHex(0x2f66ff);
+      if (truck.lamp) truck.lamp.intensity = 6;
+    }
+    this.roadblocks.push(block);
     this.emitWanted();
     this.updateHelicopter(0.016, playerPos);
     for (const cruiser of this.cruisers) {

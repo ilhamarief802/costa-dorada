@@ -550,24 +550,35 @@ export default class Pedestrians {
       const gait = Math.min(1, moving * 0.6);
       // Even at rest there is a slow idle sway, so a still figure is never perfectly rigid.
       const idle = 0.1 + Math.sin(ped.phase * 0.9) * 0.05;
-      const stride = Math.max(gait, idle) * ped.strideScale;
+      // A pinned figure in the contact-sheet frames was staged mid-gesture, not frozen at rest:
+      // keep the full stride so the walking pose really shows the legs apart.
+      const poseName = ped.pose ?? 'walk';
+      const midGesture = poseName === 'walk' || poseName === 'cross' || poseName === 'bag';
+      const stride = ped.pinned && midGesture
+        ? Math.max(0.82, ped.strideScale * 0.62)
+        : Math.max(gait, idle) * ped.strideScale;
       const swing = Math.sin(ped.phase) * 0.55 * stride;
       const bounce = Math.abs(Math.sin(ped.phase)) * 0.035 * gait;
       const scale = ped.scale * (ped.sit ? 0.94 : 1);
       const baseY = ped.ground + bounce - (ped.sit ? 0.26 : 0);
       const yaw = ped.yaw;
-      const pose = ped.pose ?? 'walk';
+      const pose = poseName;
       const cos = Math.cos(yaw);
       const sin = Math.sin(yaw);
 
       // A staged vendor is folded over his cart and a shopkeeper leans in a doorway; both keep the
       // legs planted while the torso pitches. The lean is in the figure's own frame, so it reads
       // the same from any camera angle.
-      const torsoPitch = pose === 'vendor' ? 0.92 : pose === 'shop' ? -0.22 : pose === 'argue' ? 0.06 : (ped.sit ? 0.16 : 0);
+      const torsoPitch = pose === 'vendor' ? 0.92
+        : pose === 'shop' ? -0.22
+        : pose === 'lean' ? -0.3
+        : pose === 'phone' ? 0.06
+        : pose === 'argue' ? 0.06
+        : (ped.sit ? 0.16 : 0);
       // A mid-crossing figure is turned off the lens and caught with its legs apart.
-      const legSpread = pose === 'cross' ? 0.38 : 0;
+      const legSpread = pose === 'cross' ? 0.38 : pose === 'standing' ? 0.14 : pose === 'lean' ? 0.2 : 0;
       // A person arguing or leaning braces their arms out from the body.
-      const armOut = pose === 'argue' ? 0.42 : pose === 'vendor' ? 0.34 : pose === 'shop' ? 0.16 : 0;
+      const armOut = pose === 'argue' ? 0.42 : pose === 'vendor' ? 0.34 : pose === 'shop' ? 0.16 : pose === 'lean' ? 0.22 : 0;
 
       // Torso and hips. Hip joint sits at 0.78; the torso hangs above it.
       dummy.position.set(ped.x, baseY + (pose === 'vendor' ? 0.94 : 1.06) * scale, ped.z);
@@ -582,11 +593,11 @@ export default class Pedestrians {
       this.hips.setMatrixAt(i, dummy.matrix);
 
       // Head and hair. A bent-over vendor looks down at the cart.
-      const headBob = pose === 'vendor' ? -0.09 : 0;
+      const headBob = pose === 'vendor' ? -0.09 : pose === 'phone' ? -0.02 : 0;
       const headY = baseY + (1.5 + headBob) * scale;
-      const headForward = pose === 'vendor' ? 0.22 * scale : 0;
+      const headForward = pose === 'vendor' ? 0.22 * scale : pose === 'phone' ? 0.05 * scale : 0;
       dummy.position.set(ped.x + headForward * sin, headY, ped.z + headForward * cos);
-      dummy.rotation.set(torsoPitch * 0.5, yaw, 0);
+      dummy.rotation.set(pose === 'phone' ? 0.34 : torsoPitch * 0.5, yaw, 0);
       dummy.scale.set(scale, scale, scale);
       dummy.updateMatrix();
       this.heads.setMatrixAt(i, dummy.matrix);
@@ -601,7 +612,12 @@ export default class Pedestrians {
       const shoulderY = baseY + 1.24 * scale;
       for (let side = 0; side < 2; side += 1) {
         const dirSign = side === 0 ? 1 : -1;
-        const armSwing = swing * dirSign + (pose === 'vendor' ? dirSign * -0.55 : 0) + armOut * dirSign * 0.5;
+        let armSwing = swing * dirSign + (pose === 'vendor' ? dirSign * -0.55 : 0) + armOut * dirSign * 0.5;
+        // The phone pose holds one forearm up to the face; the bag pose lets that arm hang
+        // slightly away from the hip so the strap reads.
+        if (pose === 'phone' && side === 0) armSwing = -1.22;
+        if (pose === 'bag' && side === 0) armSwing = 0.16;
+        if (pose === 'lean' && side === 1) armSwing = 0.34;
         const offsetX = dirSign * (0.27 + armOut * 0.1) * scale;
         const wx = ped.x + offsetX * cos;
         const wz = ped.z - offsetX * sin;
@@ -647,7 +663,12 @@ export default class Pedestrians {
         const hipX = dirSign * (0.1 + legSpread * 0.08) * scale;
         const lx = ped.x + hipX * cos;
         const lz = ped.z - hipX * sin;
-        const legAngle = -armSwing * 1.15 + legSpread * dirSign;
+        let legAngle = -armSwing * 1.15 + legSpread * dirSign;
+        // Weight on one leg: the standing and phone poses hold one knee bent and the other
+        // planted, so the silhouette is not a symmetrical pair of sticks.
+        if (pose === 'standing') legAngle = dirSign > 0 ? 0.13 : -0.05;
+        if (pose === 'phone') legAngle = dirSign > 0 ? 0.09 : -0.04;
+        if (pose === 'lean') legAngle = dirSign > 0 ? 0.24 : -0.02;
         dummy.position.set(lx, baseY + 0.78 * scale, lz);
         dummy.rotation.set(legAngle, yaw, 0);
         dummy.scale.set(scale, scale, scale);

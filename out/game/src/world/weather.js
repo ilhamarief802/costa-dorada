@@ -32,6 +32,16 @@ export default class Weather {
     this.clock = period === 'night' ? config.clock.startNight : config.clock.startGolden;
     this.renderer.toneMappingExposure = period === 'night' ? config.render.exposureNight : config.render.exposureGolden;
     this.scene.fog.density = period === 'night' ? config.fog.night : config.fog.golden;
+    // Asphalt after dark holds the lamp light: lower roughness so the sodium pools and the tail
+    // lamps streak across it, and a touch more metalness so it catches the sky's last colour. In
+    // daylight the same plate stays matte, which is what sunlit tarmac actually looks like.
+    const road = this.plan.roadMaterial;
+    if (road) {
+      road.roughness = period === 'night' ? 0.34 : 0.94;
+      road.metalness = period === 'night' ? 0.18 : 0.02;
+      road.envMapIntensity = period === 'night' ? 1.1 : 0.35;
+      road.needsUpdate = true;
+    }
   }
 
   update(dt, focus) {

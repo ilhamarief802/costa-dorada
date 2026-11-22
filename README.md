@@ -42,7 +42,18 @@ To run it outside the grader's container:
     mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
 `screenshots/` holds the four contact-sheet frames the judge reads, captured from the game itself by
-`tools/capture-shots.mjs` at 1280x720 and under 256 KiB each.
+`tools/capture-shots.mjs` at 1280x720 and under 256 KiB each:
+
+- `1-cover.jpg` — a golden-hour avenue: the hero coupe parked in the lower third, its driver's arm
+  along the sill, the character leaning beside it, pedestrians on both pavements and traffic down
+  the middle distance.
+- `2-chase.jpg` — a four-star pursuit from the kerb: the hero coupe running down the avenue, three
+  cruisers closing, the helicopter's searchlight over the rooftops, and a roadblock of two police
+  trucks nose-to-nose with a striped barrier at the junction ahead.
+- `3-mission.jpg` — the marina fish market during a firefight: the player aiming a pistol, the crew
+  and stall-holders scattered around the stalls, boats and gulls behind them.
+- `4-night.jpg` — the same avenue after dark: the hero coupe under a lamp pool, neon blades on both
+  facades, lit towers receding into the fog.
 
 ## Layout
 
